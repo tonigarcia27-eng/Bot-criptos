@@ -18,6 +18,6 @@ def test_rechaza_monedas_no_permitidas(tmp_path):
 
 def test_rechaza_riesgo_excesivo(tmp_path):
     ruta = tmp_path / "config.yaml"
-    ruta.write_text("riesgo:\n  por_operacion: 0.2\n")
+    ruta.write_text("riesgo:\n  perdida_maxima_mensual: 0.9\n")
     with pytest.raises(ValueError):
         cargar_config(ruta)

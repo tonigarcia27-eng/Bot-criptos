@@ -7,10 +7,27 @@ pasará a dinero real cuando lo decidas tú.
 > Aviso: ninguna estrategia garantiza beneficios. El bot prioriza limitar pérdidas
 > (riesgo máximo por operación y límite de pérdida mensual).
 
+## Estrategia
+
+**Rotación por momentum con filtro de tendencia** (detalles en [`bot/estrategia.py`](bot/estrategia.py)):
+
+- Una vez por semana, con el cierre diario, el bot decide cuánto tener de cada moneda (máximo 1/3 del capital en cada una).
+- Solo mantiene una moneda si está por encima de su media de 50 días **y** ha subido en los últimos 60 días. Si no, esa parte queda en euros.
+- Si una moneda está muy volátil, compra menos de ella (volatilidad objetivo del 50% anual).
+- Si en un mes el capital cae un 6%, vende todo y espera al mes siguiente.
+
+Resultado en la prueba fuera de muestra (diciembre 2022 a noviembre 2026, con datos que no se usaron para elegir los parámetros):
+**+12,6% anual con una caída máxima del -25%**, frente a +14,2% anual y -58% de caída de comprar y mantener.
+El informe completo está en [`docs/informe-backtesting.md`](docs/informe-backtesting.md).
+
+Lo que **no** hace: ganar todos los meses. Gana en pocas rachas fuertes (38% de meses en positivo) y en los
+mercados bajistas se queda en euros. Para retirar beneficios conviene hacerlo solo cuando el capital esté
+por encima de su máximo anterior.
+
 ## Plan
 
-1. **Base del bot** (este paso): configuración, conexión a Kraken y descarga de datos.
-2. **Estrategia y backtesting**: seguimiento de tendencia en 4h con gestión de riesgo, validada con datos no usados para ajustarla.
+1. ✅ Base del bot: configuración, conexión a Kraken y descarga de datos.
+2. ✅ Estrategia y backtesting con 8 años de datos y validación fuera de muestra.
 3. **Paper trading** 24/7 con registro de operaciones y resumen mensual.
 4. **Dinero real** con poco capital, tras 1–2 meses de paper trading.
 
@@ -19,16 +36,18 @@ pasará a dinero real cuando lo decidas tú.
 ```bash
 pip install -r requirements.txt
 python -m bot precios                  # precio actual de BTC, ETH y LTC en Kraken
-python -m bot descargar --dias 1095    # 3 años de velas de 4h en data/
+python -m bot descargar --dias 3000    # ~8 años de velas de 4h en data/
+python -m bot backtest                 # prueba los parámetros de estrategia.json
+python -m bot optimizar                # busca parámetros y escribe resultados/informe.md
 python -m pytest -q                    # tests
 ```
 
-Todo se ajusta en [`config.yaml`](config.yaml): pares, temporalidad, capital y riesgo.
+Todo se ajusta en [`config.yaml`](config.yaml) (pares, capital y riesgo) y [`estrategia.json`](estrategia.json) (parámetros de la estrategia). Para un bot más prudente, baja `vol_objetivo` a 0.3: gana algo menos y cae menos.
 
 ### Desde GitHub, sin instalar nada
 
-En la pestaña **Actions → Descargar datos → Run workflow** se comprueba la
-conexión con Kraken y se descarga el histórico como archivo adjunto.
+- **Actions → Descargar datos → Run workflow**: comprueba la conexión con Kraken y guarda el histórico en la rama `datos`.
+- **Actions → Backtesting → Run workflow**: repite la optimización y publica el informe en el resumen de la ejecución.
 
 ## Datos históricos
 
