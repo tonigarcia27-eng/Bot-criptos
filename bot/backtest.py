@@ -1,8 +1,8 @@
 """Simulador de cartera para probar la estrategia con datos históricos.
 
-Simula las tres monedas a la vez con un único capital compartido, comisiones
-y deslizamiento de Kraken, tamaño de posición según el riesgo y el límite de
-pérdida mensual de config.yaml.
+Simula las tres monedas con un único capital, comisiones y deslizamiento de
+Kraken, rebalanceo periódico y el límite de pérdida mensual de config.yaml.
+La decisión se toma con el cierre diario y se ejecuta a ese precio.
 """
 from __future__ import annotations
 
@@ -12,27 +12,17 @@ import numpy as np
 import pandas as pd
 
 from .config import Riesgo
-from .estrategia import Parametros, calcular_senales
+from .estrategia import Parametros, pesos_objetivo
 
-COMISION = 0.0026      # comisión taker de Kraken (0,26%) por lado
-DESLIZAMIENTO = 0.0005 # 0,05% de deslizamiento estimado por lado
-MAX_FRACCION_POSICION = 0.5  # ninguna posición supera el 50% del capital
-
-
-@dataclass
-class Posicion:
-    par: str
-    cantidad: float
-    precio_entrada: float
-    fecha_entrada: pd.Timestamp
-    stop: float
-    maximo: float
-    coste: float  # euros pagados incluida la comisión
+COMISION = 0.0026       # comisión taker de Kraken (0,26%) por operación
+DESLIZAMIENTO = 0.0005  # 0,05% de deslizamiento estimado
+ORDEN_MINIMA = 10.0     # EUR; ajustes menores no se ejecutan
+UMBRAL_AJUSTE = 0.02    # no se reajusta una moneda si la diferencia es < 2% del capital
 
 
 @dataclass
 class Resultado:
-    curva: pd.Series                       # capital al cierre de cada vela
+    curva: pd.Series
     operaciones: pd.DataFrame
     capital_inicial: float
     metricas: dict = field(default_factory=dict)
@@ -43,145 +33,93 @@ def a_utc(fecha) -> pd.Timestamp:
     return t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
 
 
-COLUMNAS_SIM = ["open", "high", "low", "close", "atr", "entrada", "salida_tendencia"]
+def ejecutar(cierres: pd.DataFrame, p: Parametros, riesgo: Riesgo, capital_inicial: float = 1000.0,
+             desde=None, hasta=None, comision: float = COMISION,
+             deslizamiento: float = DESLIZAMIENTO, pesos: pd.DataFrame | None = None) -> Resultado:
+    """`cierres`: DataFrame diario (índice fecha UTC, una columna por par).
 
-
-def preparar(datos: dict[str, pd.DataFrame], p: Parametros) -> dict[str, pd.DataFrame]:
-    return {par: calcular_senales(df, p).set_index("fecha")[COLUMNAS_SIM] for par, df in datos.items()}
-
-
-def ejecutar(datos: dict[str, pd.DataFrame], p: Parametros, riesgo: Riesgo,
-             capital_inicial: float = 1000.0, desde=None, hasta=None,
-             comision: float = COMISION, deslizamiento: float = DESLIZAMIENTO,
-             senales: dict[str, pd.DataFrame] | None = None) -> Resultado:
-    """`datos`: par -> DataFrame con columnas timestamp/open/high/low/close/fecha.
-
-    Los indicadores se calculan con todo el histórico (para que estén "calientes")
-    pero solo se opera entre `desde` y `hasta`. `senales` permite reutilizar
-    las señales ya calculadas con `preparar` (acelera la optimización).
+    Los indicadores se calculan con todo el histórico y solo se opera entre
+    `desde` y `hasta`. `pesos` permite reutilizar pesos ya calculados.
     """
-    senales = senales if senales is not None else preparar(datos, p)
+    pesos = pesos if pesos is not None else pesos_objetivo(cierres, p)
+    fechas = cierres.index
     if desde is not None:
-        senales = {par: s[s.index >= a_utc(desde)] for par, s in senales.items()}
+        fechas = fechas[fechas >= a_utc(desde)]
     if hasta is not None:
-        senales = {par: s[s.index < a_utc(hasta)] for par, s in senales.items()}
-    fechas = pd.DatetimeIndex(sorted(set().union(*(s.index for s in senales.values()))))
-    filas = {par: s.to_dict("index") for par, s in senales.items()}
+        fechas = fechas[fechas < a_utc(hasta)]
+    pares = list(cierres.columns)
+    precios = cierres.loc[fechas].to_numpy()
+    objetivo = pesos.loc[fechas].to_numpy()
+    coste = comision + deslizamiento
+
     efectivo = capital_inicial
-    posiciones: dict[str, Posicion] = {}
-    ultimo_cierre: dict[str, float] = {}
+    unidades = np.zeros(len(pares))
+    curva = np.empty(len(fechas))
     operaciones: list[dict] = []
-    curva: list[float] = []
     mes_actual = None
     capital_inicio_mes = capital_inicial
     bloqueado = False
 
-    def cerrar(pos: Posicion, precio: float, fecha, motivo: str) -> None:
-        nonlocal efectivo
-        precio_real = precio * (1 - deslizamiento)
-        ingreso = pos.cantidad * precio_real * (1 - comision)
-        efectivo += ingreso
-        operaciones.append({
-            "par": pos.par, "entrada": pos.fecha_entrada, "salida": fecha,
-            "precio_entrada": pos.precio_entrada, "precio_salida": precio_real,
-            "beneficio": ingreso - pos.coste, "rentabilidad": ingreso / pos.coste - 1,
-            "motivo": motivo,
-        })
-        del posiciones[pos.par]
-
-    for fecha in fechas:
+    for i, fecha in enumerate(fechas):
+        precio = precios[i]
+        capital = efectivo + float(unidades @ precio)
         mes = (fecha.year, fecha.month)
         if mes != mes_actual:
-            mes_actual = mes
-            capital_inicio_mes = efectivo + sum(
-                pos.cantidad * ultimo_cierre[par] for par, pos in posiciones.items())
-            bloqueado = False
+            mes_actual, capital_inicio_mes, bloqueado = mes, capital, False
 
-        # 1) Gestionar posiciones abiertas con la vela actual.
-        for par in list(posiciones):
-            f = filas[par].get(fecha)
-            if f is None:
-                continue
-            pos = posiciones[par]
-            if f["open"] <= pos.stop:
-                cerrar(pos, f["open"], fecha, "stop (hueco)")
-            elif f["low"] <= pos.stop:
-                cerrar(pos, pos.stop, fecha, "stop")
-            elif f["salida_tendencia"]:
-                cerrar(pos, f["close"], fecha, "tendencia")
-            else:
-                pos.maximo = max(pos.maximo, f["high"])
-                pos.stop = max(pos.stop, pos.maximo - p.atr_trailing * f["atr"])
-
-        for par, s in filas.items():
-            f = s.get(fecha)
-            if f is not None:
-                ultimo_cierre[par] = f["close"]
-
-        capital = efectivo + sum(pos.cantidad * ultimo_cierre[par] for par, pos in posiciones.items())
-        if capital <= capital_inicio_mes * (1 - riesgo.perdida_maxima_mensual):
+        stop_mensual = (not bloqueado
+                        and capital <= capital_inicio_mes * (1 - riesgo.perdida_maxima_mensual))
+        if stop_mensual:
             bloqueado = True
-
-        # 2) Nuevas entradas al cierre de la vela.
-        if not bloqueado:
-            for par, s in filas.items():
-                f = s.get(fecha)
-                if (f is None or par in posiciones or not f["entrada"]
-                        or len(posiciones) >= riesgo.max_posiciones_abiertas):
+        toca_rebalanceo = i % p.rebalanceo_dias == 0 or stop_mensual
+        if toca_rebalanceo:
+            deseado = np.zeros(len(pares)) if bloqueado else objetivo[i]
+            actual = unidades * precio
+            diferencia = deseado * capital - actual
+            # Primero ventas (liberan euros), luego compras.
+            for j in sorted(range(len(pares)), key=lambda j: diferencia[j]):
+                d = diferencia[j]
+                cerrar_todo = deseado[j] == 0 and actual[j] > 0
+                if not cerrar_todo and (abs(d) < ORDEN_MINIMA or abs(d) < UMBRAL_AJUSTE * capital):
                     continue
-                precio = f["close"] * (1 + deslizamiento)
-                stop = f["close"] - p.atr_stop * f["atr"]
-                distancia = precio - stop
-                if distancia <= 0:
-                    continue
-                cantidad = capital * riesgo.por_operacion / distancia
-                coste = cantidad * precio * (1 + comision)
-                limite = min(efectivo, capital * MAX_FRACCION_POSICION)
-                if coste > limite:
-                    cantidad *= limite / coste
-                    coste = limite
-                if coste < 10:  # mínimo razonable de orden en Kraken
-                    continue
-                efectivo -= coste
-                posiciones[par] = Posicion(par, cantidad, precio, fecha, stop, f["high"], coste)
-
-        curva.append(efectivo + sum(pos.cantidad * ultimo_cierre[par] for par, pos in posiciones.items()))
-
-    # Cerrar lo que quede abierto al final para medir el resultado.
-    if len(fechas):
-        for par in list(posiciones):
-            cerrar(posiciones[par], ultimo_cierre[par], fechas[-1], "fin del periodo")
-        curva[-1] = efectivo
+                if d < 0:  # vender
+                    vender = unidades[j] if cerrar_todo else min(-d / precio[j], unidades[j])
+                    efectivo += vender * precio[j] * (1 - coste)
+                    unidades[j] -= vender
+                    lado, importe = "venta", vender * precio[j]
+                else:  # comprar
+                    importe = min(d, efectivo / (1 + coste))
+                    if importe < ORDEN_MINIMA:
+                        continue
+                    unidades[j] += importe / precio[j]
+                    efectivo -= importe * (1 + coste)
+                    lado = "compra"
+                operaciones.append({"fecha": fecha, "par": pares[j], "lado": lado,
+                                    "precio": precio[j], "importe": importe,
+                                    "motivo": "stop mensual" if stop_mensual else "rebalanceo"})
+        curva[i] = efectivo + float(unidades @ precio)
 
     serie = pd.Series(curva, index=fechas, name="capital")
-    ops = pd.DataFrame(operaciones)
+    ops = pd.DataFrame(operaciones, columns=["fecha", "par", "lado", "precio", "importe", "motivo"])
     res = Resultado(serie, ops, capital_inicial)
     res.metricas = metricas(serie, ops, capital_inicial)
     return res
 
 
 def metricas(curva: pd.Series, ops: pd.DataFrame, capital_inicial: float) -> dict:
-    if curva.empty:
+    if len(curva) < 2:
         return {}
     final = float(curva.iloc[-1])
     dias = max((curva.index[-1] - curva.index[0]).days, 1)
-    caida = float((curva / curva.cummax() - 1).min())
+    diaria = curva.pct_change().dropna()
     mensual = rentabilidad_mensual(curva, capital_inicial)
-    diaria = curva.resample("1D").last().ffill().pct_change().dropna()
-    sharpe = float(diaria.mean() / diaria.std() * np.sqrt(365)) if diaria.std() > 0 else 0.0
-    n = len(ops)
-    ganadoras = int((ops["beneficio"] > 0).sum()) if n else 0
-    bruto_g = float(ops.loc[ops["beneficio"] > 0, "beneficio"].sum()) if n else 0.0
-    bruto_p = float(-ops.loc[ops["beneficio"] <= 0, "beneficio"].sum()) if n else 0.0
     return {
         "capital_final": final,
         "rentabilidad_total": final / capital_inicial - 1,
         "rentabilidad_anual": (final / capital_inicial) ** (365 / dias) - 1,
-        "caida_maxima": caida,
-        "sharpe": sharpe,
-        "operaciones": n,
-        "porcentaje_aciertos": ganadoras / n if n else 0.0,
-        "factor_beneficio": bruto_g / bruto_p if bruto_p > 0 else float("inf") if bruto_g > 0 else 0.0,
+        "caida_maxima": float((curva / curva.cummax() - 1).min()),
+        "sharpe": float(diaria.mean() / diaria.std() * np.sqrt(365)) if diaria.std() > 0 else 0.0,
+        "operaciones": int(len(ops)),
         "meses_positivos": float((mensual > 0).mean()) if len(mensual) else 0.0,
         "peor_mes": float(mensual.min()) if len(mensual) else 0.0,
         "mejor_mes": float(mensual.max()) if len(mensual) else 0.0,
@@ -190,19 +128,14 @@ def metricas(curva: pd.Series, ops: pd.DataFrame, capital_inicial: float) -> dic
 
 def rentabilidad_mensual(curva: pd.Series, capital_inicial: float) -> pd.Series:
     fin_mes = curva.resample("ME").last()
-    previo = fin_mes.shift().fillna(capital_inicial)
-    return fin_mes / previo - 1
+    return fin_mes / fin_mes.shift().fillna(capital_inicial) - 1
 
 
-def comprar_y_mantener(datos: dict[str, pd.DataFrame], desde=None, hasta=None) -> float:
-    """Rentabilidad de repartir el capital a partes iguales y no tocarlo (referencia)."""
-    rents = []
-    for df in datos.values():
-        d = df.set_index("fecha")["close"]
-        if desde is not None:
-            d = d[d.index >= a_utc(desde)]
-        if hasta is not None:
-            d = d[d.index < a_utc(hasta)]
-        if len(d) > 1:
-            rents.append(d.iloc[-1] / d.iloc[0] - 1)
-    return float(np.mean(rents)) if rents else 0.0
+def comprar_y_mantener(cierres: pd.DataFrame, desde=None, hasta=None) -> pd.Series:
+    """Curva de repartir el capital a partes iguales al inicio y no tocarlo (referencia)."""
+    c = cierres
+    if desde is not None:
+        c = c[c.index >= a_utc(desde)]
+    if hasta is not None:
+        c = c[c.index < a_utc(hasta)]
+    return (c / c.iloc[0]).mean(axis=1)

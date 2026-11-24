@@ -6,10 +6,8 @@ pares:
   - BTC/EUR
   - ETH/EUR
   - LTC/EUR
-timeframe: 4h
+timeframe: 4h             # velas que se descargan; la estrategia trabaja con el cierre diario
 capital_inicial: 1000    # EUR (simulados en modo paper)
 
 riesgo:
-  por_operacion: 0.01          # arriesga como máximo el 1% del capital en cada operación
-  perdida_maxima_mensual: 0.06 # si el mes pierde un 6%, el bot deja de abrir operaciones hasta el mes siguiente
-  max_posiciones_abiertas: 3
+  perdida_maxima_mensual: 0.06 # si el mes pierde un 6%, el bot vende todo y espera al mes siguiente

@@ -1,0 +1,7 @@
+{
+  "media": 50,
+  "momentum": 60,
+  "vol_objetivo": 0.5,
+  "vol_ventana": 20,
+  "rebalanceo_dias": 7
+}

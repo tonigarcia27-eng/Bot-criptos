@@ -1,12 +1,13 @@
 """Búsqueda de parámetros con validación walk-forward.
 
-Para no "sobreoptimizar" (elegir lo que mejor encaja con el pasado por casualidad):
-  1. Walk-forward: se eligen parámetros con 12 meses de datos y se prueban en los
-     3 meses siguientes, que no se usaron para elegir. Se avanza 3 meses y se
-     repite. Encadenando esos tramos de prueba se obtiene una estimación honesta
-     de lo que habría ganado el bot.
-  2. Parámetros finales: los que dan resultados más consistentes en todos los
-     semestres del histórico, no los que más ganan en total.
+Para no "sobreoptimizar" (quedarse con lo que mejor encaja con el pasado por casualidad):
+  1. Prueba fuera de muestra: se eligen los parámetros con la primera mitad del
+     histórico y se prueban, sin tocarlos, en la segunda mitad.
+  2. Walk-forward: se eligen parámetros con 24 meses de datos y se prueban en los
+     6 meses siguientes, que no se usaron para elegir. Se avanza 6 meses y se
+     repite. Encadenando esos tramos de prueba se obtiene una estimación honesta.
+  3. Parámetros finales: los elegidos en el paso 1, que ya demostraron funcionar
+     en datos que no se usaron para elegirlos.
 """
 from __future__ import annotations
 
@@ -18,100 +19,95 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .backtest import comprar_y_mantener, ejecutar, metricas, preparar
+from .backtest import comprar_y_mantener, ejecutar, metricas, rentabilidad_mensual
 from .config import RAIZ, Riesgo
-from .estrategia import Parametros
+from .estrategia import Parametros, pesos_objetivo
 
 REJILLA = {
-    "ema_rapida": [10, 20, 30],
-    "ema_lenta": [50, 80],
-    "ema_tendencia": [100, 200],
-    "atr_stop": [2.0, 3.0],
-    "atr_trailing": [3.0, 4.0, 5.0],
-    "rsi_max": [70.0, 80.0],
+    "media": [20, 50, 100],
+    "momentum": [14, 30, 60, 90],
+    "vol_objetivo": [0.0, 0.3, 0.5, 0.8],
 }
 RUTA_PARAMETROS = RAIZ / "estrategia.json"
 
 
 def combinaciones(rejilla: dict = REJILLA) -> list[Parametros]:
     claves = list(rejilla)
-    return [replace(Parametros(), **dict(zip(claves, vals)))
-            for vals in itertools.product(*(rejilla[c] for c in claves))
-            if dict(zip(claves, vals)).get("ema_rapida", 0) < dict(zip(claves, vals)).get("ema_lenta", 1)]
+    return [replace(Parametros(), **dict(zip(claves, v)))
+            for v in itertools.product(*(rejilla[c] for c in claves))]
 
 
-def puntuacion(m: dict, min_operaciones: int = 6) -> float:
-    """Rentabilidad ajustada al riesgo: premia ganar y castiga las caídas."""
-    if not m or m["operaciones"] < min_operaciones:
-        return -np.inf
-    return m["rentabilidad_total"] / max(abs(m["caida_maxima"]), 0.02)
+def puntuacion(m: dict) -> float:
+    """Sharpe: rentabilidad por unidad de riesgo."""
+    return m.get("sharpe", -np.inf) if m else -np.inf
 
 
-def rango_fechas(datos: dict[str, pd.DataFrame]) -> tuple[pd.Timestamp, pd.Timestamp]:
-    inicio = max(df["fecha"].iloc[0] for df in datos.values())
-    fin = min(df["fecha"].iloc[-1] for df in datos.values())
-    return inicio, fin
+def inicio_operable(cierres: pd.DataFrame, candidatos: list[Parametros]) -> pd.Timestamp:
+    dias = max(p.dias_minimos for p in candidatos)
+    return cierres.index[min(dias, len(cierres) - 1)]
 
 
-def walk_forward(datos, riesgo: Riesgo, capital: float, candidatos: list[Parametros],
-                 meses_entreno: int = 12, meses_prueba: int = 3, calentamiento_meses: int = 2):
-    inicio, fin = rango_fechas(datos)
-    inicio = (inicio + pd.DateOffset(months=calentamiento_meses)).normalize()
-    ventanas = []
-    t0 = inicio
+def walk_forward(cierres, riesgo: Riesgo, capital: float, candidatos: list[Parametros],
+                 meses_entreno: int = 24, meses_prueba: int = 6):
+    inicio, fin = inicio_operable(cierres, candidatos), cierres.index[-1]
+    ventanas, t0 = [], inicio
     while t0 + pd.DateOffset(months=meses_entreno) < fin:
         t1 = t0 + pd.DateOffset(months=meses_entreno)
-        t2 = min(t1 + pd.DateOffset(months=meses_prueba), fin + pd.Timedelta(hours=1))
-        ventanas.append((t0, t1, t2))
-        t0 = t0 + pd.DateOffset(months=meses_prueba)
-    # Puntuar cada candidato en cada ventana de entrenamiento (señales calculadas una vez).
+        ventanas.append((t0, t1, min(t1 + pd.DateOffset(months=meses_prueba), fin + pd.Timedelta(days=1))))
+        t0 += pd.DateOffset(months=meses_prueba)
+    if not ventanas:
+        return None
     mejores = [(-np.inf, candidatos[0])] * len(ventanas)
     for p in candidatos:
-        sen = preparar(datos, p)
+        pesos = pesos_objetivo(cierres, p)
         for i, (a, b, _) in enumerate(ventanas):
-            s = puntuacion(ejecutar(datos, p, riesgo, capital, desde=a, hasta=b, senales=sen).metricas)
+            s = puntuacion(ejecutar(cierres, p, riesgo, capital, desde=a, hasta=b, pesos=pesos).metricas)
             if s > mejores[i][0]:
                 mejores[i] = (s, p)
-    tramos, curvas, ops = [], [], []
-    cap = capital
-    for (t0, t1, t2), (_, mejor_p) in zip(ventanas, mejores):
-        prueba = ejecutar(datos, mejor_p, riesgo, cap, desde=t1, hasta=t2)
-        if prueba.curva.empty:
-            break
+    tramos, curvas, ops, cap = [], [], [], capital
+    for (t0, t1, t2), (_, p) in zip(ventanas, mejores):
+        prueba = ejecutar(cierres, p, riesgo, cap, desde=t1, hasta=t2)
         curvas.append(prueba.curva)
-        if not prueba.operaciones.empty:
-            ops.append(prueba.operaciones)
+        ops.append(prueba.operaciones)
+        ref = comprar_y_mantener(cierres, t1, t2)
         tramos.append({"entreno": f"{t0:%Y-%m} a {t1:%Y-%m}", "prueba": f"{t1:%Y-%m-%d} a {t2:%Y-%m-%d}",
-                       "parametros": mejor_p, "rentabilidad": prueba.metricas["rentabilidad_total"]})
+                       "parametros": p, "rentabilidad": prueba.metricas["rentabilidad_total"],
+                       "referencia": float(ref.iloc[-1] - 1)})
         cap = float(prueba.curva.iloc[-1])
-    if not curvas:
-        return None
     curva = pd.concat(curvas)
-    operaciones = pd.concat(ops, ignore_index=True) if ops else pd.DataFrame(columns=["beneficio"])
+    operaciones = pd.concat(ops, ignore_index=True)
+    ref = comprar_y_mantener(cierres, curva.index[0]) * capital
     return {"curva": curva, "operaciones": operaciones, "tramos": tramos,
             "metricas": metricas(curva, operaciones, capital),
-            "comprar_y_mantener": comprar_y_mantener(datos, curva.index[0], curva.index[-1] + pd.Timedelta(hours=1))}
+            "referencia": metricas(ref, operaciones.iloc[:0], capital)}
 
 
-def parametros_consistentes(datos, riesgo: Riesgo, capital: float, candidatos: list[Parametros],
-                            meses_segmento: int = 6, calentamiento_meses: int = 2):
-    inicio, fin = rango_fechas(datos)
-    inicio = (inicio + pd.DateOffset(months=calentamiento_meses)).normalize()
-    cortes = []
-    t = inicio
-    while t < fin:
-        cortes.append((t, min(t + pd.DateOffset(months=meses_segmento), fin + pd.Timedelta(hours=1))))
-        t += pd.DateOffset(months=meses_segmento)
+def fuera_de_muestra(cierres, riesgo: Riesgo, capital: float, candidatos: list[Parametros]):
+    """Elige con la primera mitad del histórico y prueba sin cambios en la segunda."""
+    inicio = inicio_operable(cierres, candidatos)
+    corte = inicio + (cierres.index[-1] - inicio) / 2
+    corte = pd.Timestamp(corte.date(), tz="UTC")
+    mejor = max(candidatos, key=lambda p: puntuacion(
+        ejecutar(cierres, p, riesgo, capital, desde=inicio, hasta=corte).metricas))
+    prueba = ejecutar(cierres, mejor, riesgo, capital, desde=corte)
+    ref = comprar_y_mantener(cierres, corte) * capital
+    medianas = pd.DataFrame([ejecutar(cierres, p, riesgo, capital, desde=corte).metricas
+                             for p in candidatos]).median()
+    return {"corte": corte, "inicio": inicio, "parametros": mejor, "curva": prueba.curva,
+            "metricas": prueba.metricas, "referencia": metricas(ref, prueba.operaciones.iloc[:0], capital),
+            "mediana_todas": medianas.to_dict()}
+
+
+def parametros_consistentes(cierres, riesgo: Riesgo, capital: float, candidatos: list[Parametros]):
+    inicio = inicio_operable(cierres, candidatos)
     tabla = []
     for p in candidatos:
-        sen = preparar(datos, p)
-        total = ejecutar(datos, p, riesgo, capital, desde=inicio, senales=sen).metricas
-        rents = [ejecutar(datos, p, riesgo, capital, desde=a, hasta=b, senales=sen).metricas.get("rentabilidad_total", 0.0)
-                 for a, b in cortes]
-        tabla.append({"parametros": p, "media_semestral": float(np.mean(rents)),
-                      "peor_semestre": float(np.min(rents)),
-                      "consistencia": float(np.mean(rents) - np.std(rents)), **total})
-    tabla.sort(key=lambda r: (r["operaciones"] >= 10, r["consistencia"]), reverse=True)
+        r = ejecutar(cierres, p, riesgo, capital, desde=inicio)
+        anual = r.curva.resample("YE").last()
+        anual = anual / anual.shift().fillna(capital) - 1
+        tabla.append({"parametros": p, "peor_año": float(anual.min()), "media_anual": float(anual.mean()),
+                      "consistencia": float(anual.mean() - anual.std()), **r.metricas})
+    tabla.sort(key=lambda r: r["sharpe"], reverse=True)
     return tabla
 
 
@@ -129,58 +125,78 @@ def _pct(x: float) -> str:
     return f"{x * 100:+.1f}%"
 
 
-def informe(wf: dict | None, tabla: list[dict], datos, capital: float) -> str:
-    inicio, fin = rango_fechas(datos)
-    lineas = [
+def _p(p: Parametros) -> str:
+    vol = f"{p.vol_objetivo:.0%}" if p.vol_objetivo else "sin control"
+    return f"media {p.media}d, momentum {p.momentum}d, volatilidad {vol}"
+
+
+def _tabla_comparada(m: dict, r: dict, operaciones: bool = True) -> list[str]:
+    l = ["| Métrica | Bot | Comprar y mantener |", "|---|---|---|"]
+    for clave, nombre in [("rentabilidad_total", "Rentabilidad total"), ("rentabilidad_anual", "Rentabilidad anual"),
+                          ("caida_maxima", "Caída máxima"), ("peor_mes", "Peor mes"), ("mejor_mes", "Mejor mes")]:
+        l.append(f"| {nombre} | {_pct(m[clave])} | {_pct(r[clave])} |")
+    l += [f"| Meses en positivo | {m['meses_positivos']:.0%} | {r['meses_positivos']:.0%} |",
+          f"| Sharpe | {m['sharpe']:.2f} | {r['sharpe']:.2f} |"]
+    if operaciones:
+        l.append(f"| Operaciones | {m['operaciones']} | |")
+    return l
+
+
+def informe(oos: dict, wf: dict | None, tabla: list[dict], elegido: dict, cierres: pd.DataFrame,
+            riesgo: Riesgo, capital: float) -> str:
+    l = [
         "# Informe de backtesting",
         "",
-        f"Datos: {', '.join(datos)} en velas de 4h, del {inicio:%Y-%m-%d} al {fin:%Y-%m-%d}. "
-        f"Capital inicial {capital:,.0f} EUR. Incluye comisiones (0,26% por lado) y deslizamiento (0,05%).",
+        f"Datos diarios de {', '.join(cierres.columns)} del {cierres.index[0]:%Y-%m-%d} al "
+        f"{cierres.index[-1]:%Y-%m-%d}. Capital inicial {capital:,.0f} EUR. Incluye comisión "
+        "de Kraken (0,26%) y deslizamiento (0,05%) en cada operación, y el límite de pérdida "
+        f"mensual del {riesgo.perdida_maxima_mensual:.0%}.",
         "",
-        "## 1. Resultado honesto (walk-forward)",
+        "## 1. Prueba fuera de muestra (la más importante)",
         "",
-        "Parámetros elegidos con 12 meses de datos y probados en los 3 meses siguientes, que no se "
-        "usaron para elegirlos. Es la mejor estimación de lo que habría pasado operando de verdad.",
+        f"Parámetros elegidos solo con datos del {oos['inicio']:%Y-%m-%d} al {oos['corte']:%Y-%m-%d} "
+        f"({_p(oos['parametros'])}) y probados sin cambios del {oos['corte']:%Y-%m-%d} hasta hoy, "
+        "un periodo que no se usó para elegirlos.",
         "",
     ]
+    l += _tabla_comparada(oos["metricas"], oos["referencia"])
+    med = oos["mediana_todas"]
+    l += ["", f"Mediana de las {len(tabla)} combinaciones en ese mismo periodo: rentabilidad anual "
+          f"{_pct(med['rentabilidad_anual'])}, caída máxima {_pct(med['caida_maxima'])}, Sharpe {med['sharpe']:.2f}.",
+          "", "Por año: " + ", ".join(
+              f"{f:%Y} {_pct(v)}" for f, v in (lambda a: a / a.shift().fillna(capital) - 1)(
+                  oos["curva"].resample("YE").last()).items()),
+          "",
+          "## 2. Walk-forward (reoptimizando cada 6 meses)",
+          "",
+          "Parámetros elegidos con 24 meses de datos y probados en los 6 meses siguientes. Sirve para "
+          "ver si conviene reajustar los parámetros a menudo.",
+          ""]
     if wf:
-        m = wf["metricas"]
-        lineas += [
-            "| Métrica | Bot | Comprar y mantener |",
-            "|---|---|---|",
-            f"| Rentabilidad total | {_pct(m['rentabilidad_total'])} | {_pct(wf['comprar_y_mantener'])} |",
-            f"| Rentabilidad anual | {_pct(m['rentabilidad_anual'])} | |",
-            f"| Caída máxima | {_pct(m['caida_maxima'])} | |",
-            f"| Meses en positivo | {m['meses_positivos'] * 100:.0f}% | |",
-            f"| Mejor / peor mes | {_pct(m['mejor_mes'])} / {_pct(m['peor_mes'])} | |",
-            f"| Operaciones | {m['operaciones']} | |",
-            f"| Aciertos | {m['porcentaje_aciertos'] * 100:.0f}% | |",
-            f"| Factor de beneficio | {m['factor_beneficio']:.2f} | |",
-            f"| Sharpe | {m['sharpe']:.2f} | |",
-            "",
-            "Tramos de prueba:",
-            "",
-            "| Entreno | Prueba | Rentabilidad | EMAs | Stop / trailing (ATR) |",
-            "|---|---|---|---|---|",
-        ]
-        for t in wf["tramos"]:
-            p = t["parametros"]
-            lineas.append(f"| {t['entreno']} | {t['prueba']} | {_pct(t['rentabilidad'])} | "
-                          f"{p.ema_rapida}/{p.ema_lenta}/{p.ema_tendencia} | {p.atr_stop}/{p.atr_trailing} |")
-        mens = (wf["curva"].resample("ME").last() / wf["curva"].resample("ME").last().shift().fillna(capital) - 1)
-        lineas += ["", "Rentabilidad mes a mes:", "", "| Mes | Rentabilidad |", "|---|---|"]
-        lineas += [f"| {f:%Y-%m} | {_pct(r)} |" for f, r in mens.items()]
+        l += _tabla_comparada(wf["metricas"], wf["referencia"])
+        l += ["", "| Entreno | Prueba | Bot | Comprar y mantener | Parámetros |", "|---|---|---|---|---|"]
+        l += [f"| {t['entreno']} | {t['prueba']} | {_pct(t['rentabilidad'])} | {_pct(t['referencia'])} | {_p(t['parametros'])} |"
+              for t in wf["tramos"]]
+        anual = wf["curva"].resample("YE").last()
+        anual = anual / anual.shift().fillna(capital) - 1
+        l += ["", "Por año: " + ", ".join(f"{f:%Y} {_pct(v)}" for f, v in anual.items())]
+        mens = rentabilidad_mensual(wf["curva"], capital)
+        l += ["", "Últimos 12 meses: " + ", ".join(f"{f:%Y-%m} {_pct(v)}" for f, v in mens.tail(12).items())]
     else:
-        lineas.append("No hay datos suficientes para el walk-forward (hacen falta más de 15 meses).")
+        l.append("No hay datos suficientes para el walk-forward.")
 
-    lineas += ["", "## 2. Parámetros más consistentes", "",
-               "Ordenados por consistencia entre semestres (media menos desviación), no por el máximo beneficio.",
-               "", "| EMAs | RSI máx | Stop/trailing | Rent. total | Caída máx | Media semestral | Peor semestre | Ops |",
-               "|---|---|---|---|---|---|---|---|"]
-    for r in tabla[:10]:
-        p = r["parametros"]
-        lineas.append(f"| {p.ema_rapida}/{p.ema_lenta}/{p.ema_tendencia} | {p.rsi_max:.0f} | {p.atr_stop}/{p.atr_trailing} | "
-                      f"{_pct(r['rentabilidad_total'])} | {_pct(r['caida_maxima'])} | {_pct(r['media_semestral'])} | "
-                      f"{_pct(r['peor_semestre'])} | {r['operaciones']} |")
-    lineas += ["", f"Parámetros guardados en `estrategia.json`: `{json.dumps(tabla[0]['parametros'].como_dict())}`", ""]
-    return "\n".join(lineas)
+    e = elegido
+    l += ["", "## 3. Parámetros elegidos para el bot", "",
+          f"**{_p(e['parametros'])}**, rebalanceo cada {e['parametros'].rebalanceo_dias} días. "
+          "Son los de la prueba fuera de muestra: ya demostraron funcionar con datos que no se usaron para elegirlos.",
+          "",
+          f"En todo el histórico (dentro de muestra, optimista): rentabilidad anual {_pct(e['rentabilidad_anual'])}, "
+          f"caída máxima {_pct(e['caida_maxima'])}, peor año {_pct(e['peor_año'])}, Sharpe {e['sharpe']:.2f}.",
+          f"Puesto {next(i for i, r in enumerate(tabla, 1) if r is e)} de {len(tabla)} por Sharpe en todo el histórico.", "", "Las 10 mejores combinaciones por Sharpe:", "",
+          "| Parámetros | Rent. anual | Caída máx | Peor año | Sharpe |", "|---|---|---|---|---|"]
+    l += [f"| {_p(r['parametros'])} | {_pct(r['rentabilidad_anual'])} | {_pct(r['caida_maxima'])} | "
+          f"{_pct(r['peor_año'])} | {r['sharpe']:.2f} |" for r in tabla[:10]]
+    l += ["", f"Mediana del Sharpe de las {len(tabla)} combinaciones: {np.median([r['sharpe'] for r in tabla]):.2f} "
+          "(si casi todas funcionan parecido, la estrategia es robusta y no depende de un ajuste fino).",
+          "", f"Guardado en `estrategia.json`: `{json.dumps(e['parametros'].como_dict())}`", ""]
+    return "\n".join(l)

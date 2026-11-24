@@ -12,9 +12,7 @@ RAIZ = Path(__file__).resolve().parent.parent
 
 @dataclass
 class Riesgo:
-    por_operacion: float = 0.01
     perdida_maxima_mensual: float = 0.06
-    max_posiciones_abiertas: int = 3
 
 
 @dataclass
@@ -34,8 +32,6 @@ class Config:
             base = par.split("/")[0]
             if base not in MONEDAS_PERMITIDAS:
                 raise ValueError(f"{par} no está permitido: el bot solo opera BTC, ETH y LTC")
-        if not 0 < self.riesgo.por_operacion <= 0.05:
-            raise ValueError("riesgo.por_operacion debe estar entre 0 y 0.05 (5%)")
         if not 0 < self.riesgo.perdida_maxima_mensual <= 0.5:
             raise ValueError("riesgo.perdida_maxima_mensual debe estar entre 0 y 0.5")
         if self.capital_inicial <= 0:

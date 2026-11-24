@@ -35,30 +35,36 @@ def cargar_historico(cfg, fuente=None) -> dict:
 
 def cmd_backtest(cfg, args) -> None:
     from .backtest import comprar_y_mantener, ejecutar
+    from .estrategia import cierres_diarios
     from .optimizar import cargar_parametros
 
-    datos = cargar_historico(cfg, args.fuente)
+    cierres = cierres_diarios(cargar_historico(cfg, args.fuente))
     p = cargar_parametros()
-    r = ejecutar(datos, p, cfg.riesgo, cfg.capital_inicial, desde=args.desde, hasta=args.hasta)
+    desde = args.desde or cierres.index[p.dias_minimos]
+    r = ejecutar(cierres, p, cfg.riesgo, cfg.capital_inicial, desde=desde, hasta=args.hasta)
     print(f"Parámetros: {p.como_dict()}")
     for k, v in r.metricas.items():
         print(f"  {k}: {v:.4f}")
-    print(f"  comprar_y_mantener: {comprar_y_mantener(datos, args.desde, args.hasta):.4f}")
+    ref = comprar_y_mantener(cierres, desde, args.hasta)
+    print(f"  comprar_y_mantener: {ref.iloc[-1] - 1:.4f}")
 
 
 def cmd_optimizar(cfg, args) -> None:
     from pathlib import Path
 
-    from .optimizar import (combinaciones, guardar_parametros, informe,
+    from .estrategia import cierres_diarios
+    from .optimizar import (combinaciones, fuera_de_muestra, guardar_parametros, informe,
                             parametros_consistentes, walk_forward)
 
-    datos = cargar_historico(cfg, args.fuente)
+    cierres = cierres_diarios(cargar_historico(cfg, args.fuente))
     candidatos = combinaciones()
     print(f"Probando {len(candidatos)} combinaciones de parámetros...")
-    wf = walk_forward(datos, cfg.riesgo, cfg.capital_inicial, candidatos)
-    tabla = parametros_consistentes(datos, cfg.riesgo, cfg.capital_inicial, candidatos)
-    guardar_parametros(tabla[0]["parametros"])
-    texto = informe(wf, tabla, datos, cfg.capital_inicial)
+    oos = fuera_de_muestra(cierres, cfg.riesgo, cfg.capital_inicial, candidatos)
+    wf = walk_forward(cierres, cfg.riesgo, cfg.capital_inicial, candidatos)
+    tabla = parametros_consistentes(cierres, cfg.riesgo, cfg.capital_inicial, candidatos)
+    elegido = next(r for r in tabla if r["parametros"] == oos["parametros"])
+    guardar_parametros(elegido["parametros"])
+    texto = informe(oos, wf, tabla, elegido, cierres, cfg.riesgo, cfg.capital_inicial)
     salida = Path(args.salida)
     salida.parent.mkdir(parents=True, exist_ok=True)
     salida.write_text(texto, encoding="utf-8")

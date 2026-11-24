@@ -1,60 +1,61 @@
-"""Estrategia de seguimiento de tendencia (solo compras, mercado spot).
+"""Estrategia: rotación por momentum con filtro de tendencia y control de volatilidad.
 
-Entrada (al cierre de la vela):
-  - Tendencia de fondo alcista: cierre por encima de la EMA larga.
-  - Impulso: la EMA rápida cruza por encima de la EMA lenta en esta vela
-    o en las `ventana_cruce` anteriores.
-  - RSI entre `rsi_min` y `rsi_max` (hay fuerza, pero no está sobrecomprado).
+Una vez a la semana, con velas diarias:
+  1. Cada moneda (BTC, ETH, LTC) puede ocupar como máximo 1/3 del capital.
+  2. Solo se mantiene una moneda si está en tendencia alcista: su precio está
+     por encima de su media de `media` días Y ha subido en los últimos
+     `momentum` días. Si no, esa parte del capital queda en euros.
+  3. Control de volatilidad: si una moneda se mueve mucho (volatilidad anual
+     por encima de `vol_objetivo`), se compra menos de ella en proporción.
 
-Salida:
-  - Stop-loss inicial a `atr_stop` ATR por debajo del precio de entrada.
-  - Stop dinámico (trailing): `atr_trailing` ATR por debajo del máximo
-    alcanzado desde la entrada. Solo sube, nunca baja.
-  - Cierre por tendencia: la EMA rápida cae por debajo de la lenta.
+En mercados bajistas el bot acaba casi todo en euros, que es lo que limita
+las pérdidas. En mercados alcistas va invertido y captura la subida.
+
+Se probó primero un cruce de medias en velas de 4h; con 8 años de datos
+reales no superó la validación walk-forward y se descartó.
 """
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
+import numpy as np
 import pandas as pd
-
-from .indicadores import atr, ema, rsi
 
 
 @dataclass(frozen=True)
 class Parametros:
-    ema_rapida: int = 20
-    ema_lenta: int = 50
-    ema_tendencia: int = 200
-    rsi_periodo: int = 14
-    rsi_min: float = 50.0
-    rsi_max: float = 72.0
-    ventana_cruce: int = 3
-    atr_periodo: int = 14
-    atr_stop: float = 2.5
-    atr_trailing: float = 3.5
+    media: int = 50            # días de la media móvil (filtro de tendencia)
+    momentum: int = 30         # días para medir si la moneda está subiendo
+    vol_objetivo: float = 0.5  # volatilidad anual objetivo por moneda (0 = sin control)
+    vol_ventana: int = 20      # días para medir la volatilidad
+    rebalanceo_dias: int = 7   # cada cuántos días se ajusta la cartera
 
     def como_dict(self) -> dict:
         return asdict(self)
 
+    @property
+    def dias_minimos(self) -> int:
+        return max(self.media, self.momentum, self.vol_ventana) + 1
 
-def calcular_senales(df: pd.DataFrame, p: Parametros) -> pd.DataFrame:
-    out = df.copy()
-    out["ema_r"] = ema(out["close"], p.ema_rapida)
-    out["ema_l"] = ema(out["close"], p.ema_lenta)
-    out["ema_t"] = ema(out["close"], p.ema_tendencia)
-    out["rsi"] = rsi(out["close"], p.rsi_periodo)
-    out["atr"] = atr(out, p.atr_periodo)
 
-    encima = out["ema_r"] > out["ema_l"]
-    cruce = encima & ~encima.shift(fill_value=False)
-    cruce_reciente = cruce.rolling(p.ventana_cruce + 1, min_periods=1).max().astype(bool)
-    out["entrada"] = (
-        cruce_reciente
-        & encima
-        & (out["close"] > out["ema_t"])
-        & out["rsi"].between(p.rsi_min, p.rsi_max)
-        & out["atr"].notna()
-    )
-    out["salida_tendencia"] = ~encima & out["ema_l"].notna()
-    return out
+def a_diario(df: pd.DataFrame) -> pd.Series:
+    """Cierre diario (UTC) a partir de velas de cualquier temporalidad."""
+    return df.set_index("fecha")["close"].resample("1D").last().dropna()
+
+
+def cierres_diarios(datos: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    return pd.DataFrame({par: a_diario(df) for par, df in datos.items()}).dropna()
+
+
+def pesos_objetivo(cierres: pd.DataFrame, p: Parametros) -> pd.DataFrame:
+    """Peso objetivo de cada moneda (0 a 1/n) calculado con el cierre de cada día."""
+    n = cierres.shape[1]
+    media = cierres.rolling(p.media).mean()
+    subida = cierres / cierres.shift(p.momentum) - 1
+    en_tendencia = (cierres > media) & (subida > 0)
+    pesos = en_tendencia.astype(float) / n
+    if p.vol_objetivo > 0:
+        vol = cierres.pct_change().rolling(p.vol_ventana).std() * np.sqrt(365)
+        pesos = pesos * (p.vol_objetivo / vol).clip(upper=1.0)
+    pesos[media.isna() | subida.isna()] = 0.0
+    return pesos.fillna(0.0)
