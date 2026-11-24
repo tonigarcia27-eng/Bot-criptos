@@ -1,0 +1,15 @@
+# Configuración del bot. Solo se permiten BTC, ETH y LTC.
+modo: paper              # paper (simulado) o real
+exchange: kraken         # exchange donde opera el bot
+fuente_historica: bitstamp  # Kraken solo da ~720 velas; Bitstamp tiene años de histórico en EUR
+pares:
+  - BTC/EUR
+  - ETH/EUR
+  - LTC/EUR
+timeframe: 4h
+capital_inicial: 1000    # EUR (simulados en modo paper)
+
+riesgo:
+  por_operacion: 0.01          # arriesga como máximo el 1% del capital en cada operación
+  perdida_maxima_mensual: 0.06 # si el mes pierde un 6%, el bot deja de abrir operaciones hasta el mes siguiente
+  max_posiciones_abiertas: 3

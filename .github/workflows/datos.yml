@@ -1,0 +1,27 @@
+name: Descargar datos
+# Se lanza a mano desde la pestaña Actions. Comprueba la conexión con Kraken
+# y descarga el histórico, que queda como artefacto descargable.
+on:
+  workflow_dispatch:
+    inputs:
+      dias:
+        description: "Días de histórico"
+        default: "1095"
+jobs:
+  descargar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Precios actuales en Kraken
+        run: python -m bot precios
+      - name: Histórico
+        run: python -m bot descargar --dias "${{ inputs.dias }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: datos-historicos
+          path: data/*.csv
