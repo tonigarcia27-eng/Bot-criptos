@@ -6,7 +6,7 @@ on:
     inputs:
       dias:
         description: "Días de histórico"
-        default: "1460"
+        default: "3000"
   pull_request:
     paths:
       - "bot/**"
@@ -24,7 +24,7 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - name: Histórico
-        run: python -m bot descargar --dias "${{ inputs.dias || '1460' }}"
+        run: python -m bot descargar --dias "${{ inputs.dias || '3000' }}"
       - name: Optimización walk-forward
         run: python -m bot optimizar --salida resultados/informe.md
       - name: Publicar informe

@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("precios", help="muestra el precio actual de cada par en el exchange")
 
     d = sub.add_parser("descargar", help="descarga velas históricas a data/")
-    d.add_argument("--dias", type=int, default=1095, help="días de histórico (por defecto 3 años)")
+    d.add_argument("--dias", type=int, default=3000, help="días de histórico (por defecto ~8 años)")
     d.add_argument("--fuente", help="exchange de origen (por defecto fuente_historica)")
     d.add_argument("--timeframe", help="por defecto el de config.yaml")
 

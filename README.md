@@ -19,7 +19,7 @@ pasará a dinero real cuando lo decidas tú.
 ```bash
 pip install -r requirements.txt
 python -m bot precios                  # precio actual de BTC, ETH y LTC en Kraken
-python -m bot descargar --dias 1095    # 3 años de velas de 4h en data/
+python -m bot descargar --dias 3000    # ~8 años de velas de 4h en data/
 python -m pytest -q                    # tests
 ```
 

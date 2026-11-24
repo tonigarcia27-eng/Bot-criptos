@@ -6,7 +6,7 @@ on:
     inputs:
       dias:
         description: "Días de histórico"
-        default: "1460"
+        default: "3000"
   schedule:
     - cron: "0 3 * * 1"
   pull_request:
@@ -27,7 +27,7 @@ jobs:
       - name: Precios actuales en Kraken
         run: python -m bot precios
       - name: Histórico
-        run: python -m bot descargar --dias "${{ inputs.dias || '1460' }}"
+        run: python -m bot descargar --dias "${{ inputs.dias || '3000' }}"
       - uses: actions/upload-artifact@v4
         with:
           name: datos-historicos
