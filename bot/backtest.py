@@ -33,6 +33,38 @@ def a_utc(fecha) -> pd.Timestamp:
     return t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
 
 
+def rebalancear(unidades: np.ndarray, efectivo: float, precio: np.ndarray, deseado: np.ndarray,
+                coste: float) -> tuple[np.ndarray, float, list[tuple[int, str, float]]]:
+    """Ajusta la cartera a los pesos `deseado`. Devuelve unidades, efectivo y operaciones (índice, lado, importe EUR).
+
+    Primero vende (libera euros) y luego compra. Ignora ajustes pequeños para ahorrar comisiones,
+    salvo cerrar del todo una moneda.
+    """
+    unidades = unidades.astype(float).copy()
+    capital = efectivo + float(unidades @ precio)
+    actual = unidades * precio
+    diferencia = deseado * capital - actual
+    hechas: list[tuple[int, str, float]] = []
+    for j in sorted(range(len(precio)), key=lambda j: diferencia[j]):
+        d = diferencia[j]
+        cerrar_todo = deseado[j] == 0 and actual[j] > 0
+        if not cerrar_todo and (abs(d) < ORDEN_MINIMA or abs(d) < UMBRAL_AJUSTE * capital):
+            continue
+        if d < 0:
+            vender = unidades[j] if cerrar_todo else min(-d / precio[j], unidades[j])
+            efectivo += vender * precio[j] * (1 - coste)
+            unidades[j] -= vender
+            hechas.append((j, "venta", vender * precio[j]))
+        else:
+            importe = min(d, efectivo / (1 + coste))
+            if importe < ORDEN_MINIMA:
+                continue
+            unidades[j] += importe / precio[j]
+            efectivo -= importe * (1 + coste)
+            hechas.append((j, "compra", importe))
+    return unidades, efectivo, hechas
+
+
 def ejecutar(cierres: pd.DataFrame, p: Parametros, riesgo: Riesgo, capital_inicial: float = 1000.0,
              desde=None, hasta=None, comision: float = COMISION,
              deslizamiento: float = DESLIZAMIENTO, pesos: pd.DataFrame | None = None) -> Resultado:
@@ -74,29 +106,10 @@ def ejecutar(cierres: pd.DataFrame, p: Parametros, riesgo: Riesgo, capital_inici
         toca_rebalanceo = i % p.rebalanceo_dias == 0 or stop_mensual
         if toca_rebalanceo:
             deseado = np.zeros(len(pares)) if bloqueado else objetivo[i]
-            actual = unidades * precio
-            diferencia = deseado * capital - actual
-            # Primero ventas (liberan euros), luego compras.
-            for j in sorted(range(len(pares)), key=lambda j: diferencia[j]):
-                d = diferencia[j]
-                cerrar_todo = deseado[j] == 0 and actual[j] > 0
-                if not cerrar_todo and (abs(d) < ORDEN_MINIMA or abs(d) < UMBRAL_AJUSTE * capital):
-                    continue
-                if d < 0:  # vender
-                    vender = unidades[j] if cerrar_todo else min(-d / precio[j], unidades[j])
-                    efectivo += vender * precio[j] * (1 - coste)
-                    unidades[j] -= vender
-                    lado, importe = "venta", vender * precio[j]
-                else:  # comprar
-                    importe = min(d, efectivo / (1 + coste))
-                    if importe < ORDEN_MINIMA:
-                        continue
-                    unidades[j] += importe / precio[j]
-                    efectivo -= importe * (1 + coste)
-                    lado = "compra"
-                operaciones.append({"fecha": fecha, "par": pares[j], "lado": lado,
-                                    "precio": precio[j], "importe": importe,
-                                    "motivo": "stop mensual" if stop_mensual else "rebalanceo"})
+            unidades, efectivo, hechas = rebalancear(unidades, efectivo, precio, deseado, coste)
+            motivo = "stop mensual" if stop_mensual else "rebalanceo"
+            operaciones += [{"fecha": fecha, "par": pares[j], "lado": lado, "precio": precio[j],
+                             "importe": importe, "motivo": motivo} for j, lado, importe in hechas]
         curva[i] = efectivo + float(unidades @ precio)
 
     serie = pd.Series(curva, index=fechas, name="capital")

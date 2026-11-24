@@ -71,6 +71,17 @@ def cmd_optimizar(cfg, args) -> None:
     print(texto)
 
 
+def cmd_paper(cfg, args) -> None:
+    from pathlib import Path
+
+    from .optimizar import cargar_parametros
+    from .paper import CARPETA, ejecutar
+
+    if cfg.modo != "paper":
+        raise SystemExit("config.yaml no está en modo paper")
+    print(ejecutar(cfg, cargar_parametros(), crear_exchange(cfg.exchange), Path(args.carpeta or CARPETA)))
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="bot", description="Bot de trading BTC/ETH/LTC")
     p.add_argument("--config", help="ruta a config.yaml")
@@ -92,10 +103,14 @@ def main(argv: list[str] | None = None) -> None:
     o.add_argument("--fuente")
     o.add_argument("--salida", default="resultados/informe.md")
 
+    pt = sub.add_parser("paper", help="ejecuta un día de paper trading con precios reales de Kraken")
+    pt.add_argument("--carpeta", help="dónde guardar el estado (por defecto paper/)")
+
     args = p.parse_args(argv)
     cfg = cargar_config(args.config)
     {"precios": cmd_precios, "descargar": cmd_descargar,
-     "backtest": cmd_backtest, "optimizar": cmd_optimizar}[args.comando](cfg, args)
+     "backtest": cmd_backtest, "optimizar": cmd_optimizar,
+     "paper": cmd_paper}[args.comando](cfg, args)
 
 
 if __name__ == "__main__":
