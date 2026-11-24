@@ -1,12 +1,19 @@
 name: Descargar datos
-# Se lanza a mano desde la pestaña Actions. Comprueba la conexión con Kraken
-# y descarga el histórico, que queda como artefacto descargable.
+# Comprueba la conexión con Kraken, descarga el histórico y lo guarda en la
+# rama `datos` (y como artefacto). Se lanza a mano o cada lunes.
 on:
   workflow_dispatch:
     inputs:
       dias:
         description: "Días de histórico"
-        default: "1095"
+        default: "1460"
+  schedule:
+    - cron: "0 3 * * 1"
+  pull_request:
+    paths:
+      - ".github/workflows/datos.yml"
+permissions:
+  contents: write
 jobs:
   descargar:
     runs-on: ubuntu-latest
@@ -20,8 +27,20 @@ jobs:
       - name: Precios actuales en Kraken
         run: python -m bot precios
       - name: Histórico
-        run: python -m bot descargar --dias "${{ inputs.dias }}"
+        run: python -m bot descargar --dias "${{ inputs.dias || '1460' }}"
       - uses: actions/upload-artifact@v4
         with:
           name: datos-historicos
           path: data/*.csv
+      - name: Guardar en la rama datos
+        run: |
+          mkdir -p /tmp/datos && cp data/*.csv /tmp/datos/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan datos-tmp
+          git rm -rq --cached .
+          git clean -fdxq -e .git
+          cp /tmp/datos/*.csv .
+          git add *.csv
+          git commit -qm "Datos históricos $(date -u +%F)"
+          git push -f origin HEAD:datos
