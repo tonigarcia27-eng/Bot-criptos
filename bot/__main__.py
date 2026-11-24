@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 
 from .config import cargar_config
-from .datos import actualizar
+from .datos import actualizar, cargar, ruta_csv
 from .exchange import crear_exchange, precio_actual
 
 
@@ -22,6 +22,49 @@ def cmd_descargar(cfg, args) -> None:
         print(f"{par}: {len(df)} velas desde {df['fecha'].iloc[0]:%Y-%m-%d} hasta {df['fecha'].iloc[-1]:%Y-%m-%d %H:%M}")
 
 
+def cargar_historico(cfg, fuente=None) -> dict:
+    fuente = fuente or cfg.fuente_historica
+    datos = {}
+    for par in cfg.pares:
+        ruta = ruta_csv(fuente, par, cfg.timeframe)
+        if not ruta.exists():
+            raise SystemExit(f"Falta {ruta}. Ejecuta antes: python -m bot descargar")
+        datos[par] = cargar(ruta)
+    return datos
+
+
+def cmd_backtest(cfg, args) -> None:
+    from .backtest import comprar_y_mantener, ejecutar
+    from .optimizar import cargar_parametros
+
+    datos = cargar_historico(cfg, args.fuente)
+    p = cargar_parametros()
+    r = ejecutar(datos, p, cfg.riesgo, cfg.capital_inicial, desde=args.desde, hasta=args.hasta)
+    print(f"Parámetros: {p.como_dict()}")
+    for k, v in r.metricas.items():
+        print(f"  {k}: {v:.4f}")
+    print(f"  comprar_y_mantener: {comprar_y_mantener(datos, args.desde, args.hasta):.4f}")
+
+
+def cmd_optimizar(cfg, args) -> None:
+    from pathlib import Path
+
+    from .optimizar import (combinaciones, guardar_parametros, informe,
+                            parametros_consistentes, walk_forward)
+
+    datos = cargar_historico(cfg, args.fuente)
+    candidatos = combinaciones()
+    print(f"Probando {len(candidatos)} combinaciones de parámetros...")
+    wf = walk_forward(datos, cfg.riesgo, cfg.capital_inicial, candidatos)
+    tabla = parametros_consistentes(datos, cfg.riesgo, cfg.capital_inicial, candidatos)
+    guardar_parametros(tabla[0]["parametros"])
+    texto = informe(wf, tabla, datos, cfg.capital_inicial)
+    salida = Path(args.salida)
+    salida.parent.mkdir(parents=True, exist_ok=True)
+    salida.write_text(texto, encoding="utf-8")
+    print(texto)
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="bot", description="Bot de trading BTC/ETH/LTC")
     p.add_argument("--config", help="ruta a config.yaml")
@@ -34,9 +77,19 @@ def main(argv: list[str] | None = None) -> None:
     d.add_argument("--fuente", help="exchange de origen (por defecto fuente_historica)")
     d.add_argument("--timeframe", help="por defecto el de config.yaml")
 
+    b = sub.add_parser("backtest", help="prueba la estrategia (estrategia.json) con el histórico")
+    b.add_argument("--fuente")
+    b.add_argument("--desde", help="AAAA-MM-DD")
+    b.add_argument("--hasta", help="AAAA-MM-DD")
+
+    o = sub.add_parser("optimizar", help="busca parámetros con walk-forward y escribe el informe")
+    o.add_argument("--fuente")
+    o.add_argument("--salida", default="resultados/informe.md")
+
     args = p.parse_args(argv)
     cfg = cargar_config(args.config)
-    {"precios": cmd_precios, "descargar": cmd_descargar}[args.comando](cfg, args)
+    {"precios": cmd_precios, "descargar": cmd_descargar,
+     "backtest": cmd_backtest, "optimizar": cmd_optimizar}[args.comando](cfg, args)
 
 
 if __name__ == "__main__":
