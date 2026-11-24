@@ -28,7 +28,7 @@ por encima de su máximo anterior.
 
 1. ✅ Base del bot: configuración, conexión a Kraken y descarga de datos.
 2. ✅ Estrategia y backtesting con 8 años de datos y validación fuera de muestra.
-3. **Paper trading** 24/7 con registro de operaciones y resumen mensual.
+3. ✅ **Paper trading** diario con precios reales de Kraken, registro de operaciones y resumen mensual.
 4. **Dinero real** con poco capital, tras 1–2 meses de paper trading.
 
 ## Uso
@@ -39,6 +39,7 @@ python -m bot precios                  # precio actual de BTC, ETH y LTC en Krak
 python -m bot descargar --dias 3000    # ~8 años de velas de 4h en data/
 python -m bot backtest                 # prueba los parámetros de estrategia.json
 python -m bot optimizar                # busca parámetros y escribe resultados/informe.md
+python -m bot paper                    # un día de paper trading (estado en paper/)
 python -m pytest -q                    # tests
 ```
 
@@ -48,6 +49,20 @@ Todo se ajusta en [`config.yaml`](config.yaml) (pares, capital y riesgo) y [`est
 
 - **Actions → Descargar datos → Run workflow**: comprueba la conexión con Kraken y guarda el histórico en la rama `datos`.
 - **Actions → Backtesting → Run workflow**: repite la optimización y publica el informe en el resumen de la ejecución.
+
+## Paper trading
+
+Cada día a las 00:15 UTC, GitHub Actions ejecuta `python -m bot paper`: descarga las velas
+diarias de Kraken, decide y simula las órdenes al precio real con la comisión de Kraken.
+El estado se guarda en la rama [`paper`](../../tree/paper):
+
+- [`RESUMEN.md`](../../blob/paper/RESUMEN.md): capital, cartera, rentabilidad frente a comprar y mantener,
+  meses cerrados y **beneficio retirable** (lo que el capital supera su mejor cierre de mes anterior).
+- `operaciones.csv`: cada compra y venta simulada.
+- `diario.csv`: capital y precios de cada día.
+
+Para lanzarlo a mano: **Actions → Paper trading → Run workflow** (si ya se ejecutó ese día, no repite operaciones).
+Para empezar de cero, borra la rama `paper`.
 
 ## Datos históricos
 

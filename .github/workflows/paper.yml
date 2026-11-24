@@ -1,0 +1,60 @@
+name: Paper trading
+# Un día de paper trading con precios reales de Kraken. Se ejecuta cada día a las
+# 00:15 UTC (01:15 en España en invierno). El estado y el resumen se guardan en la
+# rama `paper` (ver paper/RESUMEN.md en esa rama).
+on:
+  schedule:
+    - cron: "15 0 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "bot/**"
+      - ".github/workflows/paper.yml"
+permissions:
+  contents: write
+concurrency:
+  group: paper-trading
+  cancel-in-progress: false
+jobs:
+  paper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Prueba en seco (pull request, no guarda nada)
+        if: github.event_name == 'pull_request'
+        run: |
+          python -m bot paper --carpeta /tmp/paper-prueba
+          cat /tmp/paper-prueba/RESUMEN.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Recuperar el estado de la rama paper
+        if: github.event_name != 'pull_request'
+        run: |
+          if git fetch --depth=1 origin paper; then
+            mkdir -p paper
+            git --work-tree=paper checkout origin/paper -- .
+            git reset -q
+          fi
+      - name: Ejecutar el día
+        if: github.event_name != 'pull_request'
+        run: |
+          python -m bot paper
+          cat paper/RESUMEN.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Guardar en la rama paper
+        if: github.event_name != 'pull_request'
+        run: |
+          cp -r paper /tmp/paper-estado
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan paper-tmp
+          git rm -rq --cached .
+          git clean -fdxq -e .git
+          cp -r /tmp/paper-estado/. .
+          git add -A
+          git commit -qm "Paper trading $(date -u +%F)"
+          git push -f origin HEAD:paper
