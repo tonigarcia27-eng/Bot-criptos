@@ -94,3 +94,12 @@ def test_no_opera_si_la_clave_puede_retirar(tmp_path):
 
     with pytest.raises(SystemExit, match="retirar"):
         ejecutar(Config(), P, KrakenFalso(retirar=True), {}, tmp_path)
+
+
+def test_ignora_saltos_de_linea_al_pegar_las_claves(monkeypatch):
+    from bot.exchange import crear_exchange
+
+    monkeypatch.setenv("KRAKEN_API_KEY", "  clave\n")
+    monkeypatch.setenv("KRAKEN_API_SECRET", "c2VjcmV0bw==\r\n")
+    ex = crear_exchange("kraken", con_claves=True)
+    assert ex.apiKey == "clave" and ex.secret == "c2VjcmV0bw=="

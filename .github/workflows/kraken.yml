@@ -10,6 +10,9 @@ permissions:
 jobs:
   kraken:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -eo pipefail {0}   # si el bot falla, el paso sale en rojo
     env:
       KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
       KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
@@ -20,6 +23,12 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
+      - name: Comprobar que las claves están en los secrets
+        run: |
+          if [ -z "$KRAKEN_API_KEY" ] || [ -z "$KRAKEN_API_SECRET" ]; then
+            echo "::error::Faltan los secrets KRAKEN_API_KEY y/o KRAKEN_API_SECRET en Settings → Secrets and variables → Actions (pestaña Secrets, apartado Repository secrets)."
+            exit 1
+          fi
       - name: Comprobar claves y saldos
         run: |
           python -m bot kraken | tee /tmp/kraken.txt
