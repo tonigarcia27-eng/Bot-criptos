@@ -7,3 +7,4 @@ data/*.csv
 resultados/
 .pytest_cache/
 paper/
+real/

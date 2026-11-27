@@ -40,6 +40,7 @@ python -m bot descargar --dias 3000    # ~8 años de velas de 4h en data/
 python -m bot backtest                 # prueba los parámetros de estrategia.json
 python -m bot optimizar                # busca parámetros y escribe resultados/informe.md
 python -m bot paper                    # un día de paper trading (estado en paper/)
+python -m bot kraken                   # comprueba las claves de Kraken (no opera)
 python -m pytest -q                    # tests
 ```
 
@@ -71,8 +72,19 @@ La API pública de Kraken solo devuelve las últimas ~720 velas, así que el
 histórico largo para el backtesting se toma de **Bitstamp** (mismos pares en EUR,
 precios prácticamente idénticos). El bot opera siempre en Kraken.
 
-## Claves de API
+## Conexión con Kraken (dinero real apagado)
 
-El modo paper **no necesita claves**. Para el modo real, copia `.env.example`
-a `.env` (o crea *secrets* en GitHub) con `KRAKEN_API_KEY` y `KRAKEN_API_SECRET`.
-Crea las claves en Kraken **sin permiso de retirada de fondos**.
+El modo paper **no necesita claves**. Para conectar el bot a tu cuenta de Kraken sigue
+[`docs/claves-kraken.md`](docs/claves-kraken.md): crea una clave **sin permiso de retirada**
+y guárdala en GitHub como *secrets* `KRAKEN_API_KEY` y `KRAKEN_API_SECRET` (o en un `.env`
+local, copiando `.env.example`; el `.env` nunca se sube).
+
+```bash
+python -m bot kraken   # comprueba las claves, muestra saldos y avisa si la clave puede retirar
+python -m bot real     # ensayo: calcula las órdenes de hoy y Kraken las valida sin ejecutarlas
+```
+
+El dinero real solo se activa con **dos llaves a la vez**: `modo: real` en `config.yaml`
+**y** la variable `BOT_DINERO_REAL=si`. Aun así, el bot no opera si la clave puede retirar
+fondos y nunca gestiona más de `real.capital_maximo` euros. Ningún workflow de GitHub
+activa el dinero real; **Actions → Comprobar Kraken** solo hace la comprobación y el ensayo.

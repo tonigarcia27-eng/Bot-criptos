@@ -1,5 +1,5 @@
 # Configuración del bot. Solo se permiten BTC, ETH y LTC.
-modo: paper              # paper (simulado) o real
+modo: paper              # paper (simulado) o real. Para dinero real hace falta ADEMÁS BOT_DINERO_REAL=si
 exchange: kraken         # exchange donde opera el bot
 fuente_historica: bitstamp  # Kraken solo da ~720 velas; Bitstamp tiene años de histórico en EUR
 pares:
@@ -11,3 +11,6 @@ capital_inicial: 200     # EUR (simulados en modo paper). Si se cambia, la simul
 
 riesgo:
   perdida_maxima_mensual: 0.06 # si el mes pierde un 6%, el bot vende todo y espera al mes siguiente
+
+real:
+  capital_maximo: 200    # EUR: en modo real el bot nunca gestiona más que esto, aunque la cuenta tenga más
