@@ -7,7 +7,7 @@ pares:
   - ETH/EUR
   - LTC/EUR
 timeframe: 4h             # velas que se descargan; la estrategia trabaja con el cierre diario
-capital_inicial: 1000    # EUR (simulados en modo paper)
+capital_inicial: 200     # EUR (simulados en modo paper). Si se cambia, la simulación vuelve a empezar
 
 riesgo:
   perdida_maxima_mensual: 0.06 # si el mes pierde un 6%, el bot vende todo y espera al mes siguiente

@@ -3,7 +3,7 @@ from datetime import timedelta
 from bot.backtest import ejecutar as backtest
 from bot.config import Config, Riesgo
 from bot.estrategia import Parametros
-from bot.paper import Estado, cargar_estado, guardar, paso_diario, resumen
+from bot.paper import Estado, cargar_estado, guardar, paso_diario, reiniciar_si_cambia_capital, resumen
 from sinteticos import cierres
 
 P = Parametros()
@@ -52,3 +52,14 @@ def test_guardar_y_cargar(tmp_path):
     texto = resumen(estado, precios, tmp_path)
     assert "Capital simulado" in texto and "BTC/EUR" in texto
     assert (tmp_path / "operaciones.csv").exists() and (tmp_path / "diario.csv").exists()
+
+
+def test_cambiar_capital_reinicia_la_simulacion(tmp_path):
+    c = cierres()
+    estado, ops, precios, fechas = simular(c, 200, 10)
+    guardar(estado, ops, precios, fechas[-1].date(), tmp_path)
+    assert reiniciar_si_cambia_capital(Config(capital_inicial=estado.capital_inicial), tmp_path) == estado
+    assert reiniciar_si_cambia_capital(Config(capital_inicial=200), tmp_path) is None
+    assert not (tmp_path / "estado.json").exists() and not (tmp_path / "diario.csv").exists()
+    archivado = tmp_path / "anteriores" / f"{estado.inicio}_{estado.capital_inicial:g}eur"
+    assert (archivado / "estado.json").exists() and (archivado / "diario.csv").exists()

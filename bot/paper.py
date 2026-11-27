@@ -105,6 +105,21 @@ def cargar_estado(carpeta: Path = CARPETA) -> Estado | None:
     return Estado(**json.loads(ruta.read_text(encoding="utf-8"))) if ruta.exists() else None
 
 
+def reiniciar_si_cambia_capital(cfg: Config, carpeta: Path = CARPETA) -> Estado | None:
+    """Si `capital_inicial` de config.yaml no coincide con el de la simulación en curso,
+    archiva la simulación anterior en `carpeta/anteriores/` y devuelve None para empezar
+    otra desde cero con el capital nuevo."""
+    estado = cargar_estado(carpeta)
+    if estado is None or estado.capital_inicial == cfg.capital_inicial:
+        return estado
+    destino = carpeta / "anteriores" / f"{estado.inicio}_{estado.capital_inicial:g}eur"
+    destino.mkdir(parents=True, exist_ok=True)
+    for nombre in ("estado.json", "diario.csv", "operaciones.csv", "RESUMEN.md"):
+        if (carpeta / nombre).exists():
+            (carpeta / nombre).replace(destino / nombre)
+    return None
+
+
 def guardar(estado: Estado, operaciones: list[dict], precios: dict[str, float], hoy: date,
             carpeta: Path = CARPETA) -> None:
     carpeta.mkdir(parents=True, exist_ok=True)
@@ -190,7 +205,7 @@ def ejecutar(cfg: Config, p: Parametros, exchange, carpeta: Path = CARPETA) -> s
     hoy = datetime.now(timezone.utc).date()
     cierres = cierres_kraken(exchange, cfg.pares, dias=max(200, p.dias_minimos + 10))
     precios = {par: precio_actual(exchange, par) for par in cfg.pares}
-    estado = cargar_estado(carpeta) or Estado.nuevo(cfg, hoy, precios)
+    estado = reiniciar_si_cambia_capital(cfg, carpeta) or Estado.nuevo(cfg, hoy, precios)
     operaciones = paso_diario(estado, cierres, precios, hoy, p, cfg)
     guardar(estado, operaciones, precios, hoy, carpeta)
     texto = resumen(estado, precios, carpeta)
