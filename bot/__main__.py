@@ -82,6 +82,23 @@ def cmd_paper(cfg, args) -> None:
     print(ejecutar(cfg, cargar_parametros(), crear_exchange(cfg.exchange), Path(args.carpeta or CARPETA)))
 
 
+def cmd_kraken(cfg, _args) -> None:
+    from .real import comprobar
+
+    print(comprobar(cfg, crear_exchange(cfg.exchange, con_claves=True)))
+
+
+def cmd_real(cfg, args) -> None:
+    import os
+    from pathlib import Path
+
+    from .optimizar import cargar_parametros
+    from .real import CARPETA, ejecutar
+
+    ex = crear_exchange(cfg.exchange, con_claves=True)
+    print(ejecutar(cfg, cargar_parametros(), ex, dict(os.environ), Path(args.carpeta or CARPETA)))
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="bot", description="Bot de trading BTC/ETH/LTC")
     p.add_argument("--config", help="ruta a config.yaml")
@@ -106,11 +123,16 @@ def main(argv: list[str] | None = None) -> None:
     pt = sub.add_parser("paper", help="ejecuta un día de paper trading con precios reales de Kraken")
     pt.add_argument("--carpeta", help="dónde guardar el estado (por defecto paper/)")
 
+    sub.add_parser("kraken", help="comprueba las claves de Kraken y muestra los saldos (no opera)")
+    r = sub.add_parser("real", help="calcula las órdenes del día sobre la cuenta de Kraken; "
+                                    "solo las ejecuta con modo: real y BOT_DINERO_REAL=si")
+    r.add_argument("--carpeta", help="dónde guardar el estado del modo real (por defecto real/)")
+
     args = p.parse_args(argv)
     cfg = cargar_config(args.config)
     {"precios": cmd_precios, "descargar": cmd_descargar,
      "backtest": cmd_backtest, "optimizar": cmd_optimizar,
-     "paper": cmd_paper}[args.comando](cfg, args)
+     "paper": cmd_paper, "kraken": cmd_kraken, "real": cmd_real}[args.comando](cfg, args)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,11 @@ class Riesgo:
 
 
 @dataclass
+class Real:
+    capital_maximo: float = 200.0   # EUR: el bot nunca gestiona más que esto en la cuenta real
+
+
+@dataclass
 class Config:
     modo: str = "paper"
     exchange: str = "kraken"
@@ -24,6 +29,7 @@ class Config:
     timeframe: str = "4h"
     capital_inicial: float = 1000.0
     riesgo: Riesgo = field(default_factory=Riesgo)
+    real: Real = field(default_factory=Real)
 
     def validar(self) -> "Config":
         if self.modo not in {"paper", "real"}:
@@ -36,6 +42,8 @@ class Config:
             raise ValueError("riesgo.perdida_maxima_mensual debe estar entre 0 y 0.5")
         if self.capital_inicial <= 0:
             raise ValueError("capital_inicial debe ser positivo")
+        if self.real.capital_maximo <= 0:
+            raise ValueError("real.capital_maximo debe ser positivo")
         return self
 
 
@@ -43,4 +51,5 @@ def cargar_config(ruta: str | Path | None = None) -> Config:
     ruta = Path(ruta) if ruta else RAIZ / "config.yaml"
     datos = yaml.safe_load(ruta.read_text(encoding="utf-8")) or {}
     riesgo = Riesgo(**(datos.pop("riesgo", None) or {}))
-    return Config(**datos, riesgo=riesgo).validar()
+    real = Real(**(datos.pop("real", None) or {}))
+    return Config(**datos, riesgo=riesgo, real=real).validar()
