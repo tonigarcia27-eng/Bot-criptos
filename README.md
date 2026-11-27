@@ -44,6 +44,7 @@ python -m pytest -q                    # tests
 ```
 
 Todo se ajusta en [`config.yaml`](config.yaml) (pares, capital y riesgo) y [`estrategia.json`](estrategia.json) (parámetros de la estrategia). Para un bot más prudente, baja `vol_objetivo` a 0.3: gana algo menos y cae menos.
+Si cambias `capital_inicial`, el paper trading empieza de nuevo con ese capital y la simulación anterior se guarda en `anteriores/` dentro de la rama `paper`.
 
 ### Desde GitHub, sin instalar nada
 
