@@ -23,13 +23,6 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
-      - name: Qué secrets ve GitHub (solo los nombres, nunca los valores)
-        env:
-          TODOS: ${{ toJSON(secrets) }}
-        run: |
-          echo "Secrets disponibles para este workflow:"
-          echo "$TODOS" | jq -r 'keys[]' | grep -v '^github_token$' | sed 's/^/  - /'
-          echo "KRAKEN_API_KEY: ${#KRAKEN_API_KEY} caracteres · KRAKEN_API_SECRET: ${#KRAKEN_API_SECRET} caracteres"
       - name: Comprobar que las claves están en los secrets
         run: |
           if [ -z "$KRAKEN_API_KEY" ] || [ -z "$KRAKEN_API_SECRET" ]; then

@@ -17,8 +17,9 @@ def crear_exchange(nombre: str = "kraken", con_claves: bool = False) -> ccxt.Exc
     opciones: dict = {"enableRateLimit": True}
     if con_claves:
         prefijo = nombre.upper()
-        clave = os.environ.get(f"{prefijo}_API_KEY")
-        secreto = os.environ.get(f"{prefijo}_API_SECRET")
+        # strip(): al copiar y pegar la clave suele colarse un salto de línea o un espacio
+        clave = (os.environ.get(f"{prefijo}_API_KEY") or "").strip()
+        secreto = (os.environ.get(f"{prefijo}_API_SECRET") or "").strip()
         if not clave or not secreto:
             raise RuntimeError(
                 f"Faltan {prefijo}_API_KEY y {prefijo}_API_SECRET en las variables de entorno"
