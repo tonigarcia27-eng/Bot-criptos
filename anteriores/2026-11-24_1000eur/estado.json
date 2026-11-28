@@ -1,0 +1,22 @@
+{
+  "inicio": "2026-11-24",
+  "capital_inicial": 1000,
+  "efectivo": 1000,
+  "unidades": {
+    "BTC/EUR": 0.0,
+    "ETH/EUR": 0.0,
+    "LTC/EUR": 0.0
+  },
+  "precios_inicio": {
+    "BTC/EUR": 54704.4,
+    "ETH/EUR": 1533.83,
+    "LTC/EUR": 37.33
+  },
+  "mes": "2026-11",
+  "capital_inicio_mes": 1000.0,
+  "bloqueado": false,
+  "ultimo_rebalanceo": "2026-11-24",
+  "maximo_fin_de_mes": 1000,
+  "ultima_ejecucion": "2026-11-27",
+  "historial_mensual": {}
+}
