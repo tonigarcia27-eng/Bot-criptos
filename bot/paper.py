@@ -3,7 +3,8 @@
 Se ejecuta una vez al día (GitHub Actions, poco después de las 00:00 UTC):
   1. Descarga las velas diarias cerradas de Kraken.
   2. Calcula los pesos de la estrategia con el último cierre.
-  3. Si toca (cada `rebalanceo_dias` o por el límite de pérdida mensual),
+  3. Si toca (cada `rebalanceo_dias`, por el límite de pérdida mensual o por el
+     freno automático),
      ajusta la cartera simulada al precio actual, con la comisión de Kraken.
   4. Guarda el estado, las operaciones y el resumen en la carpeta `paper/`.
 
@@ -23,7 +24,7 @@ import pandas as pd
 
 from .backtest import COMISION, DESLIZAMIENTO, rebalancear
 from .config import RAIZ, Config
-from .estrategia import Parametros, pesos_objetivo
+from .estrategia import Parametros, mercado_permite_reanudar, pesos_objetivo
 
 CARPETA = RAIZ / "paper"
 
@@ -42,12 +43,14 @@ class Estado:
     maximo_fin_de_mes: float = 0.0            # referencia para saber qué beneficio es retirable
     ultima_ejecucion: str = ""
     historial_mensual: dict[str, float] = field(default_factory=dict)  # mes -> capital al cierre
+    maximo_freno: float = 0.0                 # máximo del capital desde el inicio o la última reactivación
+    frenado_desde: str = ""                   # fecha en que saltó el freno ("" si no está frenado)
 
     @classmethod
     def nuevo(cls, cfg: Config, hoy: date, precios: dict[str, float]) -> "Estado":
         return cls(inicio=hoy.isoformat(), capital_inicial=cfg.capital_inicial, efectivo=cfg.capital_inicial,
                    unidades={par: 0.0 for par in cfg.pares}, precios_inicio=dict(precios),
-                   maximo_fin_de_mes=cfg.capital_inicial)
+                   maximo_fin_de_mes=cfg.capital_inicial, maximo_freno=cfg.capital_inicial)
 
     def capital(self, precios: dict[str, float]) -> float:
         return self.efectivo + sum(u * precios[par] for par, u in self.unidades.items())
@@ -77,25 +80,59 @@ def paso_diario(estado: Estado, cierres: pd.DataFrame, precios: dict[str, float]
                     and capital <= estado.capital_inicio_mes * (1 - cfg.riesgo.perdida_maxima_mensual))
     if stop_mensual:
         estado.bloqueado = True
+    salta, reanuda = paso_freno(estado, cierres, capital, hoy, p, cfg)
     dias = (hoy - date.fromisoformat(estado.ultimo_rebalanceo)).days if estado.ultimo_rebalanceo else None
-    toca = dias is None or dias >= p.rebalanceo_dias or stop_mensual
+    toca = dias is None or dias >= p.rebalanceo_dias or stop_mensual or salta or reanuda
 
     operaciones: list[dict] = []
     if toca:
         pesos = pesos_objetivo(cierres, p).iloc[-1].reindex(pares).fillna(0.0).to_numpy()
-        deseado = np.zeros(len(pares)) if estado.bloqueado else pesos
+        parado = estado.bloqueado or bool(estado.frenado_desde)
+        deseado = np.zeros(len(pares)) if parado else pesos
         unidades = np.array([estado.unidades.get(par, 0.0) for par in pares])
         # El deslizamiento se aplica al precio: se compra algo más caro y se vende algo más barato.
         unidades, estado.efectivo, hechas = rebalancear(unidades, estado.efectivo, precio, deseado,
                                                         COMISION + DESLIZAMIENTO)
         estado.unidades = dict(zip(pares, map(float, unidades)))
         estado.ultimo_rebalanceo = hoy.isoformat()
-        motivo = "stop mensual" if stop_mensual else "rebalanceo"
+        motivo = ("freno" if salta else "fin del freno" if reanuda
+                  else "stop mensual" if stop_mensual else "rebalanceo")
         operaciones = [{"fecha": hoy.isoformat(), "par": pares[j], "lado": lado, "precio": round(precio[j], 2),
                         "importe_eur": round(importe, 2), "peso_objetivo": round(float(deseado[j]), 4),
                         "motivo": motivo} for j, lado, importe in hechas]
     estado.ultima_ejecucion = hoy.isoformat()
     return operaciones
+
+
+def paso_freno(estado: Estado, cierres: pd.DataFrame, capital: float, hoy: date, p: Parametros,
+               cfg: Config) -> tuple[bool, bool]:
+    """Actualiza el freno automático. Devuelve (salta hoy, se reanuda hoy). Misma lógica que el backtest."""
+    freno = cfg.riesgo.freno
+    if not freno.activo:
+        return False, False
+    if not estado.frenado_desde:
+        estado.maximo_freno = max(estado.maximo_freno or estado.capital_inicial, capital)
+        if capital <= estado.maximo_freno * (1 - freno.caida_maxima):
+            estado.frenado_desde = hoy.isoformat()
+            return True, False
+        return False, False
+    dias = (hoy - date.fromisoformat(estado.frenado_desde)).days
+    if dias >= freno.pausa_dias and bool(mercado_permite_reanudar(cierres, p, freno.reactivar).iloc[-1]):
+        estado.frenado_desde, estado.maximo_freno = "", capital
+        return False, True
+    return False, False
+
+
+def texto_freno(estado: Estado, cfg: Config, capital: float) -> str:
+    freno = cfg.riesgo.freno
+    if not freno.activo:
+        return "desactivado"
+    if estado.frenado_desde:
+        return (f"**ACTIVADO** desde el {estado.frenado_desde}: todo en euros. Vuelve solo cuando pasen "
+                f"{freno.pausa_dias} días y el mercado mejore")
+    maximo = max(estado.maximo_freno or estado.capital_inicial, capital)
+    limite = maximo * (1 - freno.caida_maxima)
+    return f"vigilando: salta si el capital baja de {limite:,.2f} EUR ({freno.caida_maxima:.0%} bajo {maximo:,.2f} EUR)"
 
 
 # ---------------------------------------------------------------- E/S y resumen
@@ -143,7 +180,7 @@ def _anexar_csv(ruta: Path, filas: list[dict]) -> None:
         w.writerows(filas)
 
 
-def resumen(estado: Estado, precios: dict[str, float], carpeta: Path = CARPETA) -> str:
+def resumen(estado: Estado, precios: dict[str, float], carpeta: Path = CARPETA, cfg: Config | None = None) -> str:
     capital = estado.capital(precios)
     ref = np.mean([precios[par] / estado.precios_inicio[par] for par in estado.unidades]) * estado.capital_inicial
     retirable = max(0.0, capital - estado.maximo_fin_de_mes)
@@ -161,6 +198,7 @@ def resumen(estado: Estado, precios: dict[str, float], carpeta: Path = CARPETA) 
         f"| Este mes | {mes_pct:+.2%}{' (límite mensual alcanzado: en euros hasta el mes que viene)' if estado.bloqueado else ''} |",
         f"| Beneficio retirable (sobre el máximo de cierre de mes) | {retirable:,.2f} EUR |",
         f"| Euros sin invertir | {estado.efectivo:,.2f} EUR |",
+        *([f"| Freno automático | {texto_freno(estado, cfg, capital)} |"] if cfg else []),
         "",
         "## Cartera",
         "",
@@ -208,6 +246,6 @@ def ejecutar(cfg: Config, p: Parametros, exchange, carpeta: Path = CARPETA) -> s
     estado = reiniciar_si_cambia_capital(cfg, carpeta) or Estado.nuevo(cfg, hoy, precios)
     operaciones = paso_diario(estado, cierres, precios, hoy, p, cfg)
     guardar(estado, operaciones, precios, hoy, carpeta)
-    texto = resumen(estado, precios, carpeta)
+    texto = resumen(estado, precios, carpeta, cfg)
     (carpeta / "RESUMEN.md").write_text(texto, encoding="utf-8")
     return texto
