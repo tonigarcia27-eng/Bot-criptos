@@ -27,11 +27,16 @@ jobs:
         run: python -m bot descargar --dias "${{ inputs.dias || '3000' }}"
       - name: Optimización walk-forward
         run: python -m bot optimizar --salida resultados/informe.md
+      - name: Estudio del freno automático
+        run: python -m bot freno --salida resultados/informe-freno.md
       - name: Publicar informe
-        run: cat resultados/informe.md >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          cat resultados/informe.md >> "$GITHUB_STEP_SUMMARY"
+          cat resultados/informe-freno.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: informe-backtesting
           path: |
             resultados/informe.md
+            resultados/informe-freno.md
             estrategia.json

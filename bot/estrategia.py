@@ -47,15 +47,46 @@ def cierres_diarios(datos: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return pd.DataFrame({par: a_diario(df) for par, df in datos.items()}).dropna()
 
 
+def en_tendencia(cierres: pd.DataFrame, p: Parametros) -> pd.DataFrame:
+    """True el día en que la moneda está por encima de su media y ha subido en `momentum` días."""
+    media = cierres.rolling(p.media).mean()
+    subida = cierres / cierres.shift(p.momentum) - 1
+    return (cierres > media) & (subida > 0)
+
+
 def pesos_objetivo(cierres: pd.DataFrame, p: Parametros) -> pd.DataFrame:
     """Peso objetivo de cada moneda (0 a 1/n) calculado con el cierre de cada día."""
     n = cierres.shape[1]
     media = cierres.rolling(p.media).mean()
     subida = cierres / cierres.shift(p.momentum) - 1
-    en_tendencia = (cierres > media) & (subida > 0)
-    pesos = en_tendencia.astype(float) / n
+    pesos = en_tendencia(cierres, p).astype(float) / n
     if p.vol_objetivo > 0:
         vol = cierres.pct_change().rolling(p.vol_ventana).std() * np.sqrt(365)
         pesos = pesos * (p.vol_objetivo / vol).clip(upper=1.0)
     pesos[media.isna() | subida.isna()] = 0.0
     return pesos.fillna(0.0)
+
+
+def curva_sin_dinero(cierres: pd.DataFrame, pesos: pd.DataFrame) -> pd.Series:
+    """Cómo habría evolucionado la estrategia (sin comisiones, ajustando a diario) con los pesos dados.
+
+    Sirve para saber si la estrategia "vuelve a funcionar" mientras el freno la tiene parada.
+    """
+    rend = (pesos.shift().fillna(0.0) * cierres.pct_change().fillna(0.0)).sum(axis=1)
+    return (1 + rend).cumprod()
+
+
+def mercado_permite_reanudar(cierres: pd.DataFrame, p: Parametros, modo: str,
+                             pesos: pd.DataFrame | None = None) -> pd.Series:
+    """Para cada día, si se cumple la condición de reactivación del freno (ver config.Freno)."""
+    if modo == "tiempo":
+        return pd.Series(True, index=cierres.index)
+    if modo == "amplia":
+        return en_tendencia(cierres, p).sum(axis=1) >= 2
+    if modo == "btc":
+        btc = next(c for c in cierres.columns if c.startswith("BTC"))
+        return cierres[btc] > cierres[btc].rolling(100).mean()
+    if modo == "curva":
+        curva = curva_sin_dinero(cierres, pesos if pesos is not None else pesos_objetivo(cierres, p))
+        return curva > curva.rolling(30).mean()
+    raise ValueError(f"reactivación desconocida: {modo}")

@@ -1,7 +1,8 @@
 """Simulador de cartera para probar la estrategia con datos históricos.
 
 Simula las tres monedas con un único capital, comisiones y deslizamiento de
-Kraken, rebalanceo periódico y el límite de pérdida mensual de config.yaml.
+Kraken, rebalanceo periódico, el límite de pérdida mensual y el freno automático
+de config.yaml.
 La decisión se toma con el cierre diario y se ejecuta a ese precio.
 """
 from __future__ import annotations
@@ -12,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 from .config import Riesgo
-from .estrategia import Parametros, pesos_objetivo
+from .estrategia import Parametros, mercado_permite_reanudar, pesos_objetivo
 
 COMISION = 0.0026       # comisión taker de Kraken (0,26%) por operación
 DESLIZAMIENTO = 0.0005  # 0,05% de deslizamiento estimado
@@ -74,6 +75,9 @@ def ejecutar(cierres: pd.DataFrame, p: Parametros, riesgo: Riesgo, capital_inici
     `desde` y `hasta`. `pesos` permite reutilizar pesos ya calculados.
     """
     pesos = pesos if pesos is not None else pesos_objetivo(cierres, p)
+    freno = riesgo.freno
+    reanudar = (mercado_permite_reanudar(cierres, p, freno.reactivar, pesos) if freno.activo
+                else pd.Series(True, index=cierres.index))
     fechas = cierres.index
     if desde is not None:
         fechas = fechas[fechas >= a_utc(desde)]
@@ -82,6 +86,7 @@ def ejecutar(cierres: pd.DataFrame, p: Parametros, riesgo: Riesgo, capital_inici
     pares = list(cierres.columns)
     precios = cierres.loc[fechas].to_numpy()
     objetivo = pesos.loc[fechas].to_numpy()
+    puede_reanudar = reanudar.reindex(fechas).fillna(False).to_numpy()
     coste = comision + deslizamiento
 
     efectivo = capital_inicial
@@ -91,6 +96,8 @@ def ejecutar(cierres: pd.DataFrame, p: Parametros, riesgo: Riesgo, capital_inici
     mes_actual = None
     capital_inicio_mes = capital_inicial
     bloqueado = False
+    maximo = capital_inicial   # máximo del capital desde el inicio o desde la última reactivación
+    frenado_desde = None       # fecha en que saltó el freno (None si no está frenado)
 
     for i, fecha in enumerate(fechas):
         precio = precios[i]
@@ -103,11 +110,21 @@ def ejecutar(cierres: pd.DataFrame, p: Parametros, riesgo: Riesgo, capital_inici
                         and capital <= capital_inicio_mes * (1 - riesgo.perdida_maxima_mensual))
         if stop_mensual:
             bloqueado = True
-        toca_rebalanceo = i % p.rebalanceo_dias == 0 or stop_mensual
+        salta, reanuda = False, False
+        if freno.activo:
+            if frenado_desde is None:
+                maximo = max(maximo, capital)
+                salta = capital <= maximo * (1 - freno.caida_maxima)
+                frenado_desde = fecha if salta else None
+            elif (fecha - frenado_desde).days >= freno.pausa_dias and puede_reanudar[i]:
+                reanuda, frenado_desde, maximo = True, None, capital
+        toca_rebalanceo = i % p.rebalanceo_dias == 0 or stop_mensual or salta or reanuda
         if toca_rebalanceo:
-            deseado = np.zeros(len(pares)) if bloqueado else objetivo[i]
+            parado = bloqueado or frenado_desde is not None
+            deseado = np.zeros(len(pares)) if parado else objetivo[i]
             unidades, efectivo, hechas = rebalancear(unidades, efectivo, precio, deseado, coste)
-            motivo = "stop mensual" if stop_mensual else "rebalanceo"
+            motivo = ("freno" if salta else "fin del freno" if reanuda
+                      else "stop mensual" if stop_mensual else "rebalanceo")
             operaciones += [{"fecha": fecha, "par": pares[j], "lado": lado, "precio": precio[j],
                              "importe": importe, "motivo": motivo} for j, lado, importe in hechas]
         curva[i] = efectivo + float(unidades @ precio)
