@@ -1,8 +1,8 @@
 """Simulador de cartera para probar la estrategia con datos históricos.
 
-Simula las tres monedas con un único capital, comisiones y deslizamiento de
-Kraken, rebalanceo periódico, el límite de pérdida mensual y el freno automático
-de config.yaml.
+Simula las tres monedas con un único capital, comisiones (órdenes límite) y
+deslizamiento de Kraken, rebalanceo periódico, el límite de pérdida mensual y el
+freno automático de config.yaml.
 La decisión se toma con el cierre diario y se ejecuta a ese precio.
 """
 from __future__ import annotations
@@ -15,8 +15,11 @@ import pandas as pd
 from .config import Riesgo
 from .estrategia import Parametros, mercado_permite_reanudar, pesos_objetivo
 
-COMISION = 0.0026       # comisión taker de Kraken (0,26%) por operación
-DESLIZAMIENTO = 0.0005  # 0,05% de deslizamiento estimado
+# Comisiones de Kraken Pro en el nivel inicial (menos de 10.000 $ al mes), nov-2026.
+# El bot opera con órdenes límite (maker); si no se llenan a tiempo, el resto va a mercado (taker).
+COMISION = 0.0040          # orden límite (maker): 0,40%
+COMISION_MERCADO = 0.0080  # orden a mercado (taker): 0,80%, solo como plan B
+DESLIZAMIENTO = 0.0005     # 0,05% de margen por precio peor o restos que acaban a mercado
 ORDEN_MINIMA = 10.0     # EUR; ajustes menores no se ejecutan
 UMBRAL_AJUSTE = 0.02    # no se reajusta una moneda si la diferencia es < 2% del capital
 

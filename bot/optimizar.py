@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .backtest import comprar_y_mantener, ejecutar, metricas, rentabilidad_mensual
+from .backtest import COMISION, DESLIZAMIENTO, comprar_y_mantener, ejecutar, metricas, rentabilidad_mensual
 from .config import RAIZ, Riesgo
 from .estrategia import Parametros, pesos_objetivo
 
@@ -149,7 +149,7 @@ def informe(oos: dict, wf: dict | None, tabla: list[dict], elegido: dict, cierre
         "",
         f"Datos diarios de {', '.join(cierres.columns)} del {cierres.index[0]:%Y-%m-%d} al "
         f"{cierres.index[-1]:%Y-%m-%d}. Capital inicial {capital:,.0f} EUR. Incluye comisión "
-        "de Kraken (0,26%) y deslizamiento (0,05%) en cada operación, y el límite de pérdida "
+        f"de Kraken con órdenes límite ({COMISION:.2%}) y deslizamiento ({DESLIZAMIENTO:.2%}) en cada operación, y el límite de pérdida "
         f"mensual del {riesgo.perdida_maxima_mensual:.0%}.",
         "",
         "## 1. Prueba fuera de muestra (la más importante)",
