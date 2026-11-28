@@ -11,6 +11,11 @@ capital_inicial: 200     # EUR (simulados en modo paper). Si se cambia, la simul
 
 riesgo:
   perdida_maxima_mensual: 0.06 # si el mes pierde un 6%, el bot vende todo y espera al mes siguiente
+  freno:                       # freno automático (estudio en docs/informe-freno.md)
+    activo: true
+    caida_maxima: 0.20         # si el capital cae un 20% desde su máximo, vende todo y pasa a euros
+    pausa_dias: 30             # espera al menos 30 días...
+    reactivar: amplia          # ...y vuelve sola cuando al menos 2 de las 3 monedas estén en tendencia alcista
 
 real:
   capital_maximo: 200    # EUR: en modo real el bot nunca gestiona más que esto, aunque la cuenta tenga más

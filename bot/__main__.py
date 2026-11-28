@@ -71,6 +71,21 @@ def cmd_optimizar(cfg, args) -> None:
     print(texto)
 
 
+def cmd_freno(cfg, args) -> None:
+    from pathlib import Path
+
+    from .estrategia import cierres_diarios
+    from .freno import estudiar, informe
+    from .optimizar import cargar_parametros
+
+    cierres = cierres_diarios(cargar_historico(cfg, args.fuente))
+    texto = informe(estudiar(cierres, cargar_parametros(), cfg.riesgo, 1000.0), cfg.riesgo, 1000.0)
+    salida = Path(args.salida)
+    salida.parent.mkdir(parents=True, exist_ok=True)
+    salida.write_text(texto, encoding="utf-8")
+    print(texto)
+
+
 def cmd_paper(cfg, args) -> None:
     from pathlib import Path
 
@@ -120,6 +135,10 @@ def main(argv: list[str] | None = None) -> None:
     o.add_argument("--fuente")
     o.add_argument("--salida", default="resultados/informe.md")
 
+    fr = sub.add_parser("freno", help="estudia el freno automático de pérdidas y escribe el informe")
+    fr.add_argument("--fuente")
+    fr.add_argument("--salida", default="resultados/informe-freno.md")
+
     pt = sub.add_parser("paper", help="ejecuta un día de paper trading con precios reales de Kraken")
     pt.add_argument("--carpeta", help="dónde guardar el estado (por defecto paper/)")
 
@@ -131,7 +150,7 @@ def main(argv: list[str] | None = None) -> None:
     args = p.parse_args(argv)
     cfg = cargar_config(args.config)
     {"precios": cmd_precios, "descargar": cmd_descargar,
-     "backtest": cmd_backtest, "optimizar": cmd_optimizar,
+     "backtest": cmd_backtest, "optimizar": cmd_optimizar, "freno": cmd_freno,
      "paper": cmd_paper, "kraken": cmd_kraken, "real": cmd_real}[args.comando](cfg, args)
 
 

@@ -15,6 +15,9 @@ pasará a dinero real cuando lo decidas tú.
 - Solo mantiene una moneda si está por encima de su media de 50 días **y** ha subido en los últimos 60 días. Si no, esa parte queda en euros.
 - Si una moneda está muy volátil, compra menos de ella (volatilidad objetivo del 50% anual).
 - Si en un mes el capital cae un 6%, vende todo y espera al mes siguiente.
+- **Freno automático**: si el capital cae un 20% desde su máximo, vende todo y se queda en euros. Pasados
+  al menos 30 días, vuelve a operar solo cuando al menos 2 de las 3 monedas están en tendencia alcista.
+  No hace falta reactivarlo a mano. Estudio en [`docs/informe-freno.md`](docs/informe-freno.md).
 
 Resultado en la prueba fuera de muestra (diciembre 2022 a noviembre 2026, con datos que no se usaron para elegir los parámetros):
 **+12,6% anual con una caída máxima del -25%**, frente a +14,2% anual y -58% de caída de comprar y mantener.
@@ -39,6 +42,7 @@ python -m bot precios                  # precio actual de BTC, ETH y LTC en Krak
 python -m bot descargar --dias 3000    # ~8 años de velas de 4h en data/
 python -m bot backtest                 # prueba los parámetros de estrategia.json
 python -m bot optimizar                # busca parámetros y escribe resultados/informe.md
+python -m bot freno                    # estudia el freno automático y escribe resultados/informe-freno.md
 python -m bot paper                    # un día de paper trading (estado en paper/)
 python -m bot kraken                   # comprueba las claves de Kraken (no opera)
 python -m pytest -q                    # tests
