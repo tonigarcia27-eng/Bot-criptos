@@ -8,12 +8,16 @@ En cualquier otro caso trabaja en *ensayo*: lee los saldos reales, calcula qué
 compraría o vendería y manda las órdenes a Kraken con `validate`, que hace que
 Kraken las revise sin ejecutarlas. No se mueve ni un euro.
 
+Las órdenes son límite (maker), que en Kraken pagan la mitad de comisión que las
+de mercado; si no se llenan en unos minutos, el resto se ejecuta a mercado.
+
 Además, el bot se niega a operar si la clave de API tiene permiso de retirada
 de fondos, y nunca gestiona más de `real.capital_maximo` euros.
 """
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -95,8 +99,61 @@ def ordenes_del_dia(estado: Estado, cierres, precios: dict[str, float], hoy: dat
     return ops
 
 
-def enviar(exchange, ops: list[dict], real: bool) -> list[dict]:
-    """Manda las órdenes a mercado. Con real=False, Kraken solo las valida."""
+INTENTOS_LIMITE = 5   # veces que se coloca la orden límite antes de pasar a mercado
+ESPERA_SEGUNDOS = 60  # tiempo que se deja cada orden límite en el libro
+
+
+def _precio_libro(exchange, par: str, lado: str) -> float:
+    """Mejor precio del lado propio del libro: el de compra más alto o el de venta más bajo.
+
+    Poner ahí la orden la deja esperando en el libro (maker), que en Kraken paga la mitad
+    de comisión que una orden a mercado.
+    """
+    libro = exchange.fetch_order_book(par, 5)
+    return float((libro["bids"] if lado == "buy" else libro["asks"])[0][0])
+
+
+def _limite_con_plan_b(exchange, par: str, lado: str, cantidad: float, minimo: float,
+                       dormir, intentos: int, espera: float) -> str:
+    """Intenta llenar `cantidad` con órdenes límite post-only; lo que quede, a mercado."""
+    pendiente, limite = cantidad, 0.0
+    for _ in range(intentos):
+        q = float(exchange.amount_to_precision(par, pendiente))
+        if q <= 0 or q < minimo:
+            break
+        precio = float(exchange.price_to_precision(par, _precio_libro(exchange, par, lado)))
+        try:
+            orden = exchange.create_order(par, "limit", lado, q, precio, {"postOnly": True})
+        except ccxt.InvalidOrder:
+            continue  # el precio se movió y la orden habría cruzado: se vuelve a intentar
+        dormir(espera)
+        info = exchange.fetch_order(orden["id"], par)
+        if info.get("status") not in ("closed", "canceled", "expired", "rejected"):
+            try:
+                exchange.cancel_order(orden["id"], par)
+            except ccxt.OrderNotFound:
+                pass  # se llenó justo antes de cancelarla
+            info = exchange.fetch_order(orden["id"], par)
+        lleno = float(info.get("filled") or 0.0)
+        limite += lleno
+        pendiente -= lleno
+    texto = f"límite {limite:.8f}"
+    q = float(exchange.amount_to_precision(par, max(pendiente, 0.0)))
+    if q > 0 and q >= minimo:
+        orden = exchange.create_order(par, "market", lado, q, None, {})
+        texto += f", resto a mercado {q:.8f} ({orden.get('id')})"
+    return texto
+
+
+def enviar(exchange, ops: list[dict], real: bool, dormir=time.sleep,
+           intentos: int = INTENTOS_LIMITE, espera: float = ESPERA_SEGUNDOS) -> list[dict]:
+    """Manda las órdenes como límite (maker, comisión 0,40%) en vez de a mercado (0,80%).
+
+    Cada orden se coloca al mejor precio de su lado del libro y se deja `espera` segundos;
+    si no se ha llenado, se cancela y se vuelve a colocar al nuevo precio, hasta `intentos`
+    veces. Lo que quede sin llenar se compra o vende a mercado, para que el bot nunca se
+    quede a medias. Con real=False, Kraken solo valida la orden límite y no espera nada.
+    """
     exchange.load_markets()
     resultado = []
     for op in ops:
@@ -104,14 +161,20 @@ def enviar(exchange, ops: list[dict], real: bool) -> list[dict]:
         minimo = (mercado.get("limits", {}).get("amount", {}) or {}).get("min") or 0.0
         cantidad = float(exchange.amount_to_precision(op["par"], op["cantidad"]))
         fila = {**op, "cantidad": cantidad, "real": real}
+        lado = "sell" if op["lado"] == "venta" else "buy"
         if cantidad <= 0 or cantidad < minimo:
             fila["resultado"] = f"omitida: menor que el mínimo de Kraken ({minimo})"
         else:
-            lado = "sell" if op["lado"] == "venta" else "buy"
-            params = {} if real else {"validate": True}
             try:
-                orden = exchange.create_order(op["par"], "market", lado, cantidad, None, params)
-                fila["resultado"] = f"enviada ({orden.get('id')})" if real else "validada por Kraken (no ejecutada)"
+                if real:
+                    fila["resultado"] = "enviada: " + _limite_con_plan_b(
+                        exchange, op["par"], lado, cantidad, minimo, dormir, intentos, espera)
+                else:
+                    precio = float(exchange.price_to_precision(
+                        op["par"], _precio_libro(exchange, op["par"], lado)))
+                    exchange.create_order(op["par"], "limit", lado, cantidad, precio,
+                                          {"postOnly": True, "validate": True})
+                    fila["resultado"] = "orden límite validada por Kraken (no ejecutada)"
             except ccxt.BaseError as e:
                 fila["resultado"] = f"error: {e}"
         resultado.append(fila)

@@ -86,5 +86,12 @@ python -m bot real     # ensayo: calcula las órdenes de hoy y Kraken las valida
 
 El dinero real solo se activa con **dos llaves a la vez**: `modo: real` en `config.yaml`
 **y** la variable `BOT_DINERO_REAL=si`. Aun así, el bot no opera si la clave puede retirar
-fondos y nunca gestiona más de `real.capital_maximo` euros. Ningún workflow de GitHub
+fondos y nunca gestiona más de `real.capital_maximo` euros.
+
+**Órdenes límite.** El bot no compra ni vende a mercado: pone órdenes límite *post-only* al
+mejor precio de su lado del libro, que en Kraken Pro pagan un **0,40%** en vez del **0,80%**
+de una orden a mercado (nivel inicial, nov-2026). Cada orden se deja 1 minuto; si no se ha
+llenado, se cancela y se vuelve a poner al nuevo precio, hasta 5 veces. Lo que quede sin
+llenar se ejecuta a mercado, para no quedarse a medias. El backtest y el paper trading usan
+la comisión de las órdenes límite más un 0,05% de margen. Ningún workflow de GitHub
 activa el dinero real; **Actions → Comprobar Kraken** solo hace la comprobación y el ensayo.
